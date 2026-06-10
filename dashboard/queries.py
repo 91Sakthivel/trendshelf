@@ -1,21 +1,48 @@
 """All BigQuery query functions for the TrendShelf dashboard."""
 
+import os
+import json
 import streamlit as st
 import pandas as pd
 from google.cloud import bigquery
 from google.oauth2 import service_account
-from dashboard.config import PROJECT_ID, DATASET, CREDENTIALS_PATH
+from dashboard.config import PROJECT_ID, DATASET
 
 P = PROJECT_ID
 D = DATASET
 
 
 def _client():
-    creds = service_account.Credentials.from_service_account_file(
-        CREDENTIALS_PATH,
-        scopes=["https://www.googleapis.com/auth/bigquery"],
-    )
-    return bigquery.Client(project=P, credentials=creds)
+    """
+    BigQuery client.
+    Streamlit Cloud: reads GCP_CREDENTIALS_JSON from secrets.
+    Local dev: falls back to credentials.json file.
+    """
+    creds_json_str = os.environ.get("GCP_CREDENTIALS_JSON")
+
+    if creds_json_str:
+        try:
+            creds_info = json.loads(creds_json_str)
+            credentials = service_account.Credentials.from_service_account_info(
+                creds_info,
+                scopes=["https://www.googleapis.com/auth/bigquery"],
+            )
+        except json.JSONDecodeError as e:
+            raise ValueError(f"GCP_CREDENTIALS_JSON is not valid JSON: {e}")
+    else:
+        creds_path = os.environ.get("GCP_CREDENTIALS_PATH", "credentials.json")
+        if not os.path.exists(creds_path):
+            raise FileNotFoundError(
+                f"No credentials found. Set GCP_CREDENTIALS_JSON "
+                f"environment variable or provide {creds_path}"
+            )
+        credentials = service_account.Credentials.from_service_account_file(
+            creds_path,
+            scopes=["https://www.googleapis.com/auth/bigquery"],
+        )
+
+    project = os.environ.get("GCP_PROJECT_ID", P)
+    return bigquery.Client(project=project, credentials=credentials)
 
 
 def _run(sql: str) -> pd.DataFrame:

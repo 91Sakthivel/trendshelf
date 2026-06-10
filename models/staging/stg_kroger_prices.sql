@@ -1,4 +1,4 @@
-﻿{{
+{{
     config(
         materialized = 'view',
         description  = 'Kroger product prices across 20 DFW stores Ã— 10 categories. One row per product per collection run.'

@@ -1,4 +1,4 @@
-﻿{{
+{{
     config(
         materialized = 'view',
         description  = 'Monthly Producer Price Index for energy drink wholesalers (FRED PCU42440042440012).'

@@ -1,4 +1,4 @@
-﻿{{
+{{
     config(
         materialized = 'view',
         description  = 'Monthly CPI for Food at home (BLS CUUR0000SAF11). Suppressed months have NULL cpi_value.'

@@ -1,4 +1,4 @@
-﻿{{
+{{
     config(
         materialized = 'view',
         description  = 'Competitor product prices from SerpAPI Walmart Search API. One row per product per category per collection date.'

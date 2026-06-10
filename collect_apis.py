@@ -497,7 +497,7 @@ def collect_serpapi() -> bool:
 
 def main() -> int:
     print("=" * 64)
-    print("  TrendShelf — Bronze Layer Collection → BigQuery")
+    print("  TrendShelf - Bronze Layer Collection -> BigQuery")
     print(f"  Run timestamp : {RUN_TS.strftime('%Y-%m-%d %H:%M:%S UTC')}")
     print(f"  Destination   : {PROJECT_ID}.{DATASET}")
     print(f"  Stores        : {len(KROGER_STORES)}   Categories : {len(CATEGORIES)}")

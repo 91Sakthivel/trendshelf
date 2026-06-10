@@ -34,3 +34,16 @@ Thumbs.db
 *.duckdb
 *.log
 .user.yml
+
+# dbt connection config (use profiles.yml.example instead)
+profiles.yml
+
+# Temp / debug scripts
+_*.py
+check_*.py
+validate_*.py
+run_*.py
+recollect_*.py
+sample_*.py
+test_*.py
+TRENDSHELF_STATUS.md

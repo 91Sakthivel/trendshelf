@@ -1,0 +1,121 @@
+version: 2
+
+# Bronze layer — BigQuery tables written by collect_apis.py (WRITE_TRUNCATE each run).
+# Project: windy-container-451804-n4 | Dataset: bronze
+
+sources:
+  - name: bronze
+    description: >
+      Raw API data uploaded to BigQuery by collect_apis.py.
+      Each run fully replaces the table (WRITE_TRUNCATE).
+    database: windy-container-451804-n4
+    schema: bronze
+
+    tables:
+
+      - name: fred_ppi_raw
+        description: >
+          FRED series PCU42440042440012 — monthly Producer Price Index for
+          energy drink wholesalers. 24 months, most-recent first.
+        columns:
+          - name: observation_date
+            description: First day of the observation month (DATE)
+          - name: ppi_value
+            description: Producer Price Index value (FLOAT64)
+          - name: series_id
+            description: FRED series identifier
+          - name: collected_at
+            description: UTC timestamp when collect_apis.py fetched this batch
+          - name: load_timestamp
+            description: UTC timestamp when the row was written to BigQuery
+
+      - name: kroger_prices_raw
+        description: >
+          Kroger product prices across 20 DFW stores × 10 search categories.
+          Up to 50 products per store×category per run. One row per product.
+        columns:
+          - name: product_id
+            description: Kroger productId (STRING)
+          - name: upc
+          - name: brand
+          - name: description
+          - name: primary_category
+            description: First element of the product's categories array (Kroger taxonomy)
+          - name: price_regular
+            description: Regular shelf price in USD (FLOAT64)
+          - name: price_promo
+            description: Active promotional price in USD (FLOAT64, NULL when none)
+          - name: item_size
+            description: Package size string (e.g. "12 fl oz")
+          - name: sold_by
+            description: Unit of sale (e.g. "UNIT")
+          - name: store_id
+            description: Kroger locationId (e.g. 03500529)
+          - name: store_city
+            description: Human-readable store label from KROGER_STORES list (e.g. "Dallas - Capitol Ave")
+          - name: category
+            description: Search-term category from CATEGORIES list (e.g. "beverages", "snacks")
+          - name: search_term
+          - name: collected_at
+          - name: load_timestamp
+
+      - name: bls_cpi_raw
+        description: >
+          BLS series CUUR0000SAF11 — CPI for Food at home (all urban consumers).
+          Current year and prior year. Suppressed months have NULL cpi_value.
+        columns:
+          - name: reference_year
+            description: Calendar year (INT64)
+          - name: period_code
+            description: BLS period code M01–M12
+          - name: period_name
+            description: Full month name (e.g. "April")
+          - name: reference_date
+            description: First day of the reference month (DATE)
+          - name: cpi_value
+            description: CPI index value (FLOAT64, NULL when suppressed)
+          - name: is_suppressed
+            description: >
+              TRUE when BLS withheld the value (e.g. October 2025 budget lapse)
+          - name: is_latest
+            description: TRUE for the most recently published data point
+          - name: series_id
+          - name: collected_at
+          - name: load_timestamp
+
+      - name: google_trends_raw
+        description: >
+          Google Trends interest-over-time for 'energy drinks' (US, last 3 months).
+          Populated once collect_google_trends() succeeds. One row per day.
+        columns:
+          - name: trend_date
+            description: Date of the trend observation (DATE)
+          - name: interest_score
+            description: Relative search interest 0–100 (INT64)
+          - name: is_partial
+            description: TRUE if the period was incomplete when collected
+          - name: search_keyword
+          - name: geography
+            description: Geographic filter code (US)
+          - name: collected_at
+          - name: load_timestamp
+
+      - name: serpapi_prices_raw
+        description: >
+          Competitor product prices from SerpAPI Google Shopping.
+          Two queries per run: "energy drinks price walmart" and "energy drinks price kroger".
+          7-day cache prevents redundant API calls. One row per shopping result.
+        columns:
+          - name: product_name
+            description: Product title from Google Shopping result (STRING)
+          - name: competitor_store
+            description: Retailer name (e.g. Walmart, Target) from shopping source field
+          - name: competitor_price
+            description: Listed price in USD (FLOAT64, NULL if unparseable)
+          - name: search_query
+            description: The query string used for the SerpAPI call
+          - name: search_date
+            description: Date the search was performed (DATE)
+          - name: collected_at
+            description: UTC timestamp when collect_apis.py fetched this batch
+          - name: load_timestamp

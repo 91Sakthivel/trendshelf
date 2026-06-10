@@ -1,0 +1,375 @@
+version: 2
+
+# ── STAGING ───────────────────────────────────────────────────────────────────
+
+models:
+
+  - name: stg_kroger_prices
+    description: >
+      Kroger product prices across 20 DFW stores × 10 search categories.
+      One row per product per collection run. price_promo is NULL when no promotion active.
+    columns:
+      - name: store_id
+        description: Kroger locationId (e.g. 03500529)
+        tests: [not_null]
+      - name: category
+        description: Search-term category label (e.g. beverages, snacks)
+        tests: [not_null]
+      - name: collected_at
+        description: UTC timestamp when collect_apis.py fetched this batch
+        tests: [not_null]
+      - name: price_regular
+        description: Regular shelf price in USD — NULL for ~0.6% of products (sold-by-weight / unlisted)
+        tests:
+          - not_null:
+              config:
+                severity: warn
+
+  - name: stg_serpapi_prices
+    description: >
+      Competitor product prices from SerpAPI Google Shopping.
+      One row per shopping result per search query.
+      Rows with null or zero competitor_price are excluded at staging.
+    columns:
+      - name: competitor_store
+        description: Retailer name from Google Shopping result (e.g. Walmart, Target)
+        tests: [not_null]
+      - name: competitor_price
+        description: Listed price in USD — null/zero rows already filtered
+        tests: [not_null]
+
+  - name: stg_fred_ppi
+    description: >
+      Monthly Producer Price Index for energy drink wholesalers (FRED PCU42440042440012).
+      One row per observation month, 2025-01-01 onwards.
+    columns:
+      - name: observation_date
+        description: First day of the observation month (DATE)
+        tests: [not_null, unique]
+      - name: ppi_value
+        description: Producer Price Index value
+        tests: [not_null]
+
+  - name: stg_bls_cpi
+    description: >
+      Monthly CPI for Food at home (BLS CUUR0000SAF11).
+      cpi_value is NULL for suppressed months (BLS budget lapse, etc).
+    columns:
+      - name: reference_date
+        description: First day of the reference month (DATE)
+        tests: [not_null, unique]
+      - name: cpi_value
+        description: CPI index value — NULL when is_suppressed is TRUE
+        tests:
+          - not_null:
+              config:
+                where: "not is_suppressed"
+
+  - name: stg_google_trends
+    description: >
+      Daily Google Trends interest by category (US). Partial days excluded.
+    columns:
+      - name: category
+        description: Search category label matching Kroger categories
+        tests: [not_null]
+      - name: search_keyword
+        description: Keyword used for the Trends query
+        tests: [not_null]
+      - name: trend_date
+        description: Date of the trend observation
+        tests: [not_null]
+      - name: interest_score
+        description: Relative search interest 0-100
+        tests: [not_null]
+
+# ── INTERMEDIATE ──────────────────────────────────────────────────────────────
+
+  - name: int_macro_trend_features
+    description: >
+      PPI and CPI rolling windows and trend direction signals.
+      One row per reference_month. Used by fact_market_signals for latest-as-of join.
+    columns:
+      - name: reference_month
+        description: First day of the calendar month (DATE)
+        tests: [not_null, unique]
+      - name: ppi_trend_direction
+        description: Rising / Stable / Falling based on 3-month moving averages
+        tests:
+          - accepted_values:
+              values: ['Rising', 'Stable', 'Falling']
+      - name: cpi_trend_direction
+        description: Rising / Stable / Falling based on 3-month moving averages
+        tests:
+          - accepted_values:
+              values: ['Rising', 'Stable', 'Falling']
+
+  - name: int_demand_trend_features
+    description: >
+      Google Trends 4-week momentum, level score, and seasonality by category.
+      One row per category (10 rows total). Collapsed from weekly grain.
+    columns:
+      - name: category
+        description: Search category label
+        tests: [not_null, unique]
+      - name: demand_trend_direction
+        description: Rising / Stable / Falling based on 4-week vs prior 4-week average
+        tests:
+          - accepted_values:
+              values: ['Rising', 'Stable', 'Falling']
+      - name: seasonality_flag
+        description: Possible Seasonal Spike / Steady Demand / Insufficient History
+        tests:
+          - accepted_values:
+              values: ['Possible Seasonal Spike', 'Steady Demand', 'Insufficient History']
+      - name: demand_velocity_direction
+        description: Accelerating / Decelerating / Stable Velocity based on momentum second derivative
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['Accelerating', 'Decelerating', 'Stable Velocity']
+
+# ── MARTS ─────────────────────────────────────────────────────────────────────
+
+  - name: fact_market_signals
+    description: >
+      Monthly market-signal fact table. Grain: signal_id = reference_month × category × store.
+      Spine is Kroger-anchored; FRED and BLS joined latest-available-as-of.
+    columns:
+      - name: signal_id
+        description: MD5 surrogate key (reference_month || category || store_id)
+        tests: [not_null, unique]
+      - name: retail_price
+        description: Average Kroger shelf price for this category × store × month
+        tests: [not_null]
+      - name: ppi_value
+        description: Latest available FRED PPI as-of the reference month
+        tests: [not_null]
+      - name: cpi_value
+        description: Latest available BLS CPI as-of the reference month
+        tests: [not_null]
+      - name: macro_risk_flag
+        description: High Inflation Risk / Cost Pressure / Cost Relief / Stable Macro
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['High Inflation Risk', 'Cost Pressure', 'Cost Relief', 'Stable Macro']
+
+  - name: mart_demand_gap_scores
+    description: >
+      Demand gap scoring. Grain: signal_id = reference_month × category × store.
+      Higher score = bigger unmet demand opportunity.
+    columns:
+      - name: signal_id
+        description: Surrogate key matching fact_market_signals
+        tests: [not_null, unique]
+      - name: store_id
+        description: Kroger store identifier
+        tests: [not_null]
+      - name: category_name
+        description: Product category label
+        tests: [not_null]
+      - name: overall_demand_gap_score
+        description: Composite demand gap score 0-100
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 100
+
+  - name: mart_shelfrisk_scores
+    description: >
+      Shelf risk scoring. Grain: signal_id = reference_month × category × store.
+      Higher score = more risk.
+    columns:
+      - name: signal_id
+        description: Surrogate key matching fact_market_signals
+        tests: [not_null, unique]
+      - name: overall_risk_score
+        description: Weighted composite risk score 0-100
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 100
+
+  - name: mart_price_margin_scores
+    description: >
+      Price and margin health scoring. Grain: signal_id = reference_month × category × store.
+    columns:
+      - name: signal_id
+        description: Surrogate key matching fact_market_signals
+        tests: [not_null, unique]
+      - name: margin_pressure_risk
+        description: Margin squeeze risk score 0-100
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 100
+
+  - name: mart_confidence_layer
+    description: >
+      Data quality and signal confidence. Grain: signal_id = reference_month × category × store.
+      Composite of completeness, agreement, freshness, and row-level coverage.
+    columns:
+      - name: signal_id
+        description: Surrogate key matching fact_market_signals
+        tests: [not_null, unique]
+      - name: overall_confidence_score
+        description: Composite confidence score 0-100
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 100
+      - name: confidence_level
+        description: HIGH (>=75) / MEDIUM (50-74) / LOW (<50)
+        tests:
+          - accepted_values:
+              values: ['HIGH', 'MEDIUM', 'LOW']
+
+  - name: mart_action_queue
+    description: >
+      Priority-ranked action queue. One row per reference_month × category × store.
+      First-match cascade: INVESTIGATE → AVOID → EXPAND → DEFEND → PITCH →
+      REPRICE → CUTPROMO → MONITOR → INVESTIGATE (default).
+    columns:
+      - name: store_id
+        description: Kroger store identifier
+        tests: [not_null]
+      - name: category_name
+        description: Product category label
+        tests: [not_null]
+      - name: recommended_action
+        description: Action label from the first-match cascade
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['INVESTIGATE', 'AVOID', 'EXPAND', 'DEFEND',
+                       'PITCH', 'REPRICE', 'CUTPROMO', 'MONITOR']
+      - name: decision_strength
+        description: Signal strength — Strong / Moderate / Weak
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['Strong', 'Moderate', 'Weak']
+      - name: overall_opportunity_score
+        description: Weighted composite of 6 strategic dimensions, 0-100
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 100
+      - name: opportunity_tier
+        description: Opportunity bracket derived from overall_opportunity_score (Prime ≥75, Solid ≥55, Watch ≥35, Low)
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['Prime', 'Solid', 'Watch', 'Low']
+      - name: category_lifecycle
+        description: Lifecycle stage derived from velocity, trend direction, and competitive intensity
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['Growth Accelerating', 'Growth Slowing', 'Mature',
+                       'Declining', 'Emerging']
+      - name: seasonality_adjusted_action
+        description: Action type adjusted for seasonal spikes — EXPAND/PITCH downgrade to MONITOR
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['INVESTIGATE', 'AVOID', 'EXPAND', 'DEFEND',
+                       'PITCH', 'REPRICE', 'CUTPROMO', 'MONITOR']
+      - name: demand_reason_code
+        description: Machine-readable demand signal context code
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['SEASONAL_SPIKE', 'ACCELERATING', 'DECELERATING',
+                       'HIGH_STABLE', 'MEDIUM_STABLE', 'LOW_STABLE', 'NO_DATA']
+      - name: risk_reason_code
+        description: Machine-readable primary risk driver code
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['HIGH_INFLATION_RISK', 'COST_PRESSURE', 'COST_RELIEF',
+                       'SATURATED_MARKET', 'HIGH_OPERATIONAL_RISK', 'STABLE']
+
+  - name: mart_expansion_readiness
+    description: >
+      Expansion readiness scoring. Grain: signal_id = reference_month × category × store.
+      Synthesises demand, risk, margin, and confidence into a pitch priority rank.
+    columns:
+      - name: signal_id
+        description: Surrogate key matching fact_market_signals
+        tests: [not_null, unique]
+      - name: expansion_readiness_score
+        description: Composite readiness score 0-100
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 100
+
+  - name: mart_pricing_intelligence
+    description: >
+      Full pricing intelligence engine. Grain: reference_month × category × store.
+      Kroger vs Walmart DFW per store × category with elasticity-adjusted action cascade.
+      Score version: v3_category_prices.
+    columns:
+      - name: price_gap_confidence
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['High', 'Medium', 'Low', 'Missing']
+      - name: elasticity_tier
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['High', 'Medium', 'Low']
+      - name: demand_signal
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['High', 'Medium', 'Low']
+      - name: pricing_situation
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['Premium Tolerance Test', 'Price Blocking Demand',
+                       'Leaving Money on Table', 'Demand Problem Not Price',
+                       'Strong Position', 'Stable Position', 'Weak Demand']
+      - name: recommended_price_action
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['Investigate', 'Avoid Discount', 'Raise Price',
+                       'Hold Premium', 'Reduce Price', 'Protect Price', 'Monitor']
+      - name: price_reduction_intensity
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['Full', 'Partial', 'Not Safe', 'N/A']
+      - name: action_confidence_level
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['High', 'Medium', 'Low']
+      - name: pricing_power_score
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 100
+      - name: markdown_safety_score
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 100
+      - name: competitive_intensity
+        description: Saturated / Competitive / Emerging / Sparse based on competitor product count
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['Saturated', 'Competitive', 'Emerging', 'Sparse']

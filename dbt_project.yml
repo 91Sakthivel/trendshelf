@@ -1,0 +1,57 @@
+name: trendshelf
+version: "1.0.0"
+config-version: 2
+
+profile: trendshelf
+
+model-paths:    ["models"]
+test-paths:     ["tests"]
+seed-paths:     ["seeds"]
+macro-paths:    ["macros"]
+snapshot-paths: ["snapshots"]
+
+target-path: "target"
+clean-targets: ["target", "dbt_packages"]
+
+vars:
+  # ── Opportunity score weights (must sum to 1.0) ──────────────────────────────
+  # Adjust when more historical data accumulates
+  opp_weight_demand:     0.25
+  opp_weight_expansion:  0.20
+  opp_weight_pricing:    0.20
+  opp_weight_confidence: 0.15
+  opp_weight_risk:       0.10
+  opp_weight_margin:     0.10
+
+  # ── Opportunity tier thresholds ───────────────────────────────────────────────
+  opp_tier_prime:  75
+  opp_tier_solid:  55
+  opp_tier_watch:  35
+
+  # ── Demand signal thresholds ──────────────────────────────────────────────────
+  demand_high_threshold:   65
+  demand_medium_threshold: 45
+
+  # ── Confidence tier thresholds ────────────────────────────────────────────────
+  confidence_high:   75
+  confidence_medium: 50
+
+  # ── Action cascade thresholds ─────────────────────────────────────────────────
+  investigate_confidence_threshold:  45
+  avoid_margin_pressure_threshold:   80
+  avoid_markdown_safety_threshold:   40
+  expand_readiness_threshold:        80
+  expand_confidence_threshold:       70
+  expand_margin_threshold:           70
+
+models:
+  trendshelf:
+    staging:
+      +materialized: view
+      +schema: bronze
+    intermediate:
+      +materialized: table
+      +schema: bronze
+    marts:
+      +materialized: table
+      +schema: bronze

@@ -1,0 +1,36 @@
+# Secrets — never commit
+.env
+credentials.json
+*.json
+keys.txt
+test_apis.py
+
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# dbt
+target/
+dbt_packages/
+logs/
+.dbt/
+
+# Notebooks
+notebooks/.ipynb_checkpoints/
+*.ipynb_checkpoints/
+
+# Dashboard cache
+dashboard/__pycache__/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local files
+*.duckdb
+*.log
+.user.yml

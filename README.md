@@ -279,6 +279,57 @@ vars:
 
 ---
 
+## Problems We Solved
+
+Real engineering problems encountered and fixed during development.
+
+### Problem 8 -- UTF-8 BOM in staging SQL files
+
+**What happened:**
+All 5 staging SQL files contained a UTF-8 BOM (Byte Order Mark) character at the start.
+BigQuery rejected them with:
+```
+Syntax error: Illegal input character "\357"
+```
+This caused `dbt run` to fail on the entire staging layer, skipping all 14 downstream models.
+
+**How we found it:**
+`dbt run` error output showed `\357` illegal character on the first line of every staging model.
+`\357` is octal for `0xEF` -- the first byte of the UTF-8 BOM sequence `0xEF 0xBB 0xBF`.
+
+**How we fixed it:**
+Stripped the BOM from all 5 staging files by reading raw bytes and rewriting without the
+3-byte preamble. Verified with `[System.IO.File]::ReadAllBytes()` before and after.
+
+**Lesson learned:**
+Always save SQL files as UTF-8 without BOM when targeting BigQuery. Windows editors
+(including some VS Code configurations) add BOM by default. Check with a hex viewer
+if dbt fails with mysterious character encoding errors.
+
+---
+
+### Problem 9 -- Unicode characters breaking Windows console encoding
+
+**What happened:**
+`collect_apis.py` used Unicode arrow characters (`->`) in the progress banner.
+Windows cp1252 console cannot encode these characters, causing:
+```
+UnicodeEncodeError: 'charmap' codec can't encode character '→'
+```
+This caused every collection run to crash before any data was collected.
+
+**How we fixed it:**
+Replaced all Unicode `->` with ASCII `->` throughout `collect_apis.py`.
+Added `PYTHONIOENCODING=utf-8` as the environment variable for future runs
+to prevent similar issues with any remaining Unicode in log output.
+
+**Lesson learned:**
+Always use ASCII-safe characters in console output for cross-platform compatibility.
+Unicode decorative characters belong in dashboards, not terminal output.
+Set `PYTHONIOENCODING=utf-8` in your shell profile if you need Unicode in logs.
+
+---
+
 ## What I Would Do With More Time
 
 - **ML scoring layer** -- XGBoost on 6+ months of data with feature importance to validate manual weights

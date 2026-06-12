@@ -326,7 +326,42 @@ derived as (
             WHEN competitor_product_count >= 15 THEN 'Competitive'
             WHEN competitor_product_count >= 5  THEN 'Emerging'
             ELSE 'Sparse'
-        END                                                 as competitive_intensity
+        END                                                 as competitive_intensity,
+
+        -- How relevant is Walmart as a price benchmark for this category?
+        CASE
+            WHEN LOWER(category_name) IN ('household','produce','dairy','frozen foods')
+                THEN 'High'
+            WHEN LOWER(category_name) IN ('breakfast cereal','snacks')
+                THEN 'Medium'
+            WHEN LOWER(category_name) IN ('beverages','coffee tea','personal care','meat seafood')
+                THEN 'Low'
+            ELSE 'Unknown'
+        END                                                 as competitor_relevance_level,
+
+        CASE
+            WHEN LOWER(category_name) = 'household'
+                THEN 'Commodity category. Walmart EDLP pricing is a highly relevant benchmark.'
+            WHEN LOWER(category_name) = 'produce'
+                THEN 'Commodity-like category. Price comparison useful though quality differences may matter.'
+            WHEN LOWER(category_name) = 'dairy'
+                THEN 'Commodity category. Walmart benchmark relevant for milk, eggs, yogurt and similar staples.'
+            WHEN LOWER(category_name) = 'frozen foods'
+                THEN 'Commodity/brand mix. Walmart benchmark relevant for price-sensitive frozen items.'
+            WHEN LOWER(category_name) = 'breakfast cereal'
+                THEN 'Brand-driven but price-comparable. Walmart benchmark moderately relevant.'
+            WHEN LOWER(category_name) = 'snacks'
+                THEN 'Brand-driven category. Walmart benchmark moderately relevant but not definitive.'
+            WHEN LOWER(category_name) = 'beverages'
+                THEN 'Brand-loyal category. Walmart benchmark may understate Kroger premium positioning.'
+            WHEN LOWER(category_name) = 'coffee tea'
+                THEN 'Premium-tolerant category. Walmart benchmark is weaker — treat as directional only.'
+            WHEN LOWER(category_name) = 'personal care'
+                THEN 'Brand-loyal category. Shoppers may tolerate Kroger premium over Walmart.'
+            WHEN LOWER(category_name) = 'meat seafood'
+                THEN 'Quality-differentiated category. Walmart price comparison low relevance without quality normalization.'
+            ELSE 'Competitor relevance not classified.'
+        END                                                 as competitor_relevance_reason
 
     from scored
 
@@ -372,22 +407,25 @@ actioned as (
                 THEN 'Raise Price'
 
             -- 4. Hold Premium: overpriced but demand + category elasticity support it
-            -- Threshold 65 (not 70): at 1 month of data pricing_power tops at ~69 for
-            -- low-elasticity categories. Raise back to 70 at 6+ months of data.
-            -- Guard: skip when market is saturated (competing on price is necessary)
+            -- Guard: skip when market is saturated AND competitor benchmark is meaningful
             WHEN price_position = 'Overpriced'
              AND demand_signal = 'High'
-             AND pricing_power_score >= 65
+             AND pricing_power_score >= 70
              AND elasticity_tier IN ('Low', 'Medium')
              AND competitive_intensity != 'Saturated'
+             AND (
+                 competitor_relevance_level IN ('Low', 'Medium')
+                 OR pricing_power_score >= 75
+             )
                 THEN 'Hold Premium'
 
-            -- 5. Reduce Price (Full): overpriced, elastic category, safe margins
+            -- 5. Reduce Price (Full): overpriced, elastic category, safe margins, and Walmart is a credible benchmark
             WHEN price_position = 'Overpriced'
              AND demand_signal IN ('Low', 'Medium')
              AND adjusted_price_gap_pct > 10
              AND markdown_safety_score >= 60
              AND elasticity_tier IN ('High', 'Medium')
+             AND competitor_relevance_level IN ('High', 'Medium')
                 THEN 'Reduce Price'
 
             -- 6. Reduce Price (Partial): overpriced, margin caution — any elasticity
@@ -437,6 +475,8 @@ select
     ROUND(competitor_avg_price, 2)                      as competitor_avg_price,
     competitor_product_count,
     competitive_intensity,
+    competitor_relevance_level,
+    competitor_relevance_reason,
     competitor_last_updated,
 
     -- Price gap

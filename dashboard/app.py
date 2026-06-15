@@ -51,9 +51,9 @@ def _color_trend(val):
 def _page_footer():
     st.divider()
     st.caption(
-        "TrendShelf v3 | Built with Kroger API · Google Trends · FRED · BLS · "
+        "TrendShelf v4 | Built with Kroger API · Google Trends · FRED · BLS · "
         "SerpAPI Walmart DFW | dbt Core + BigQuery | "
-        "Scoring: rule-based with elasticity priors"
+        "Scoring: CV-calibrated statistical model"
     )
 
 
@@ -86,7 +86,14 @@ with st.sidebar:
 
     st.divider()
     st.markdown("**Scoring**")
-    st.markdown("`v3_category_prices`")
+    try:
+        _aq = get_action_queue()
+        _score_ver = _aq["score_version"].iloc[0] if not _aq.empty else "v4_statistical_calibration"
+    except Exception:
+        _aq = pd.DataFrame()
+        _score_ver = "v4_statistical_calibration"
+    st.markdown(f"`{_score_ver}`")
+    st.markdown("- Method: `v4_cv_calibrated`")
     st.markdown("- Kroger stores: 20")
     st.markdown("- Categories: 10")
     st.markdown(f"- Competitor: Walmart DFW #{WALMART_DFW_STORE_ID}")
@@ -94,7 +101,8 @@ with st.sidebar:
     st.divider()
     st.markdown("**Quick Stats**")
     try:
-        _aq = get_action_queue()
+        if _aq.empty:
+            _aq = get_action_queue()
         st.markdown(f"- Total scoring rows: {len(_aq)}")
         st.markdown(f"- Models passing: {TOTAL_DBT_MODELS} / {TOTAL_DBT_MODELS}")
         _aq_ts = _aq["load_timestamp"].max()
@@ -721,7 +729,7 @@ elif page == "Pricing Intelligence":
 
     st.subheader("Pricing Detail")
 
-    f1, f2, f3 = st.columns(3)
+    f1, f2, f3, f4 = st.columns(4)
     with f1:
         elast_opts = sorted(pi["elasticity_tier"].dropna().unique().tolist())
         sel_elast  = st.multiselect("Elasticity Tier", elast_opts, default=elast_opts)
@@ -731,11 +739,16 @@ elif page == "Pricing Intelligence":
     with f3:
         badge_opts = sorted(pi["price_gap_confidence"].dropna().unique().tolist())
         sel_badge  = st.multiselect("Data Quality", badge_opts, default=badge_opts)
+    with f4:
+        rel_opts   = sorted(pi["price_gap_reliability"].dropna().unique().tolist())
+        sel_rel    = st.multiselect("Reliability", rel_opts, default=rel_opts)
+    st.caption("Reduce Price recommendations only appear under High reliability.")
 
     filtered = pi[
         pi["elasticity_tier"].isin(sel_elast) &
         pi["recommended_price_action"].isin(sel_act) &
-        pi["price_gap_confidence"].isin(sel_badge)
+        pi["price_gap_confidence"].isin(sel_badge) &
+        pi["price_gap_reliability"].isin(sel_rel)
     ].copy()
 
     st.caption(f"{len(filtered)} rows after filters")
@@ -749,46 +762,55 @@ elif page == "Pricing Intelligence":
             "store_city", "category_name", "elasticity_tier",
             "kroger_avg_price", "competitor_avg_price",
             "price_gap_pct", "adjusted_price_gap_pct",
-            "price_position", "pricing_situation",
+            "price_position", "price_position_threshold",
+            "price_gap_reliability", "relative_gap_tier",
+            "pricing_situation",
             "recommended_price_action", "price_reduction_intensity",
             "action_confidence_level",
             "recommended_price", "markdown_safety_score",
             "competitor_product_count", "competitive_intensity",
+            "category_cv_pct", "kroger_private_label_share",
             "macro_risk_flag",
             "price_gap_confidence",
             "price_action_reason",
         ]
         cols_show = [c for c in cols_show if c in filtered.columns]
         tbl3 = filtered[cols_show].rename(columns={
-            "store_city":               "Store",
-            "category_name":            "Category",
-            "elasticity_tier":          "Elasticity",
-            "kroger_avg_price":         "Kroger $",
-            "competitor_avg_price":     "Walmart $",
-            "price_gap_pct":            "Gap %",
-            "adjusted_price_gap_pct":   "Adj Gap %",
-            "price_position":           "Position",
-            "pricing_situation":        "Situation",
-            "recommended_price_action": "Action",
-            "price_reduction_intensity":"Intensity",
-            "action_confidence_level":  "Confidence",
-            "recommended_price":        "Rec Price $",
-            "markdown_safety_score":    "Markdown Safety",
-            "competitor_product_count": "Walmart Products",
-            "competitive_intensity":    "Walmart Shelf",
-            "macro_risk_flag":          "Macro Risk",
-            "price_gap_confidence":     "Data Quality",
-            "price_action_reason":      "Reason",
+            "store_city":                 "Store",
+            "category_name":              "Category",
+            "elasticity_tier":            "Elasticity",
+            "kroger_avg_price":           "Kroger $",
+            "competitor_avg_price":       "Walmart $",
+            "price_gap_pct":              "Gap %",
+            "adjusted_price_gap_pct":     "Adj Gap %",
+            "price_position":             "Position",
+            "price_position_threshold":   "Band Threshold",
+            "price_gap_reliability":      "Reliability",
+            "relative_gap_tier":          "Gap Tier",
+            "pricing_situation":          "Situation",
+            "recommended_price_action":   "Action",
+            "price_reduction_intensity":  "Intensity",
+            "action_confidence_level":    "Confidence",
+            "recommended_price":          "Rec Price $",
+            "markdown_safety_score":      "Markdown Safety",
+            "competitor_product_count":   "Walmart Products",
+            "competitive_intensity":      "Walmart Shelf",
+            "category_cv_pct":            "Category CV %",
+            "kroger_private_label_share": "Private Label %",
+            "macro_risk_flag":            "Macro Risk",
+            "price_gap_confidence":       "Data Quality",
+            "price_action_reason":        "Reason",
         })
 
         _fc = tbl3.select_dtypes(include='float').columns
-        tbl3[_fc] = tbl3[_fc].round(2)
+        tbl3[_fc] = tbl3[_fc].round(4)
 
         def _sap(v):    return _color_action(v, COLORS)
         def _scp(v):    return _color_action(v, CONFIDENCE_COLORS)
         def _sbp(v):    return _color_action(v, BADGE_COLORS)
         def _sint(v):   return _color_action(v, INTENSITY_COLORS)
         def _smacro(v): return _color_action(v, MACRO_RISK_COLORS)
+        def _srel(v):   return _color_action(v, CONFIDENCE_COLORS)
 
         fmt = {}
         if "Kroger $"        in tbl3.columns: fmt["Kroger $"]        = "${:.2f}"
@@ -797,19 +819,25 @@ elif page == "Pricing Intelligence":
         if "Gap %"           in tbl3.columns: fmt["Gap %"]           = "{:.1f}%"
         if "Adj Gap %"       in tbl3.columns: fmt["Adj Gap %"]       = "{:.1f}%"
         if "Markdown Safety" in tbl3.columns: fmt["Markdown Safety"] = "{:.0f}/100"
+        if "Band Threshold"  in tbl3.columns: fmt["Band Threshold"]  = "{:.1f}%"
+        if "Category CV %"   in tbl3.columns: fmt["Category CV %"]   = "{:.1f}%"
+        if "Private Label %"  in tbl3.columns: fmt["Private Label %"] = "{:.0%}"
 
         styled3 = tbl3.style.format(fmt)
         if "Action"        in tbl3.columns: styled3 = styled3.map(_sap,    subset=["Action"])
         if "Confidence"    in tbl3.columns: styled3 = styled3.map(_scp,    subset=["Confidence"])
         if "Data Quality"  in tbl3.columns: styled3 = styled3.map(_sbp,    subset=["Data Quality"])
+        if "Reliability"   in tbl3.columns: styled3 = styled3.map(_srel,   subset=["Reliability"])
         if "Walmart Shelf" in tbl3.columns: styled3 = styled3.map(_sint,   subset=["Walmart Shelf"])
         if "Macro Risk"    in tbl3.columns: styled3 = styled3.map(_smacro, subset=["Macro Risk"])
 
         st.dataframe(styled3, use_container_width=True, hide_index=True)
 
     st.caption(
+        "Price bands are calibrated to each category's price variation (CV), bounded 8-25%. "
+        "Method: CV calibrated absolute band. "
         "Competitor prices from Walmart DFW Store 2105 (LBJ Fwy, Dallas TX). "
-        "Elasticity tiers are industry priors — labeled as such in elasticity_source column. "
+        "Elasticity tiers are industry priors. "
         "Price gap confidence weighted by competitor product count."
     )
 

@@ -87,6 +87,41 @@ prior_year_4wk as (
 
 ),
 
+-- ── OLS slope velocity over last 8 weeks ─────────────────────────────────────
+-- Replaces the 3-point second-derivative (demand_velocity_score) which is noise-
+-- fragile — one spike week flips the sign. OLS gives a smoothed trend direction.
+-- x = week index (1 = oldest of last 8, 8 = most recent); standard OLS formula:
+--   slope = (E[xy] - E[x]·E[y]) / (E[x²] - E[x]²)
+-- demand_noise = STDDEV(interest) over the same 8 weeks (normalises the slope).
+
+last8 as (
+
+    select
+        category,
+        interest_score,
+        ROW_NUMBER() OVER (
+            PARTITION BY category
+            ORDER BY trend_date
+        )                                           as x
+    from weekly
+    where week_rank <= 8
+
+),
+
+slope_calc as (
+
+    select
+        category,
+        SAFE_DIVIDE(
+            AVG(x * interest_score) - AVG(x) * AVG(interest_score),
+            NULLIF(AVG(x * x) - AVG(x) * AVG(x), 0)
+        )                                           as demand_slope_per_week,
+        STDDEV(interest_score)                      as demand_noise
+    from last8
+    group by category
+
+),
+
 -- ── Category-level stats across full 12-month window ─────────────────────────
 
 category_stats as (
@@ -138,6 +173,8 @@ final as (
         END                                                                         as demand_trend_direction,
 
         -- Demand velocity: rate of change of momentum (second derivative of trend)
+        -- LEGACY: superseded by demand_slope_per_week (OLS over 8 weeks, noise-normalized).
+        -- Retained for downstream compatibility; do not use in new logic.
         ROUND(
             (r.trends_recent_4wk_avg - p.trends_prior_4wk_avg)
             - (p.trends_prior_4wk_avg - ew.earlier_4wk_avg),
@@ -154,6 +191,26 @@ final as (
                 THEN 'Decelerating'
             ELSE 'Stable Velocity'
         END                                                                         as demand_velocity_direction,
+
+        -- OLS slope velocity (supersedes demand_velocity_score as primary signal)
+        ROUND(sc.demand_slope_per_week, 3)                                          as demand_slope_per_week,
+        ROUND(SAFE_DIVIDE(sc.demand_slope_per_week,
+              NULLIF(sc.demand_noise, 0)), 3)                                        as demand_slope_to_noise,
+
+        -- demand_state: noise-normalised slope direction (t-stat-like ratio vs STDDEV)
+        -- 'Insufficient' only when STDDEV = 0 (all 8 weeks share identical interest score)
+        CASE
+            WHEN sc.demand_noise IS NULL
+              OR sc.demand_noise = 0
+                THEN 'Insufficient'
+            WHEN SAFE_DIVIDE(sc.demand_slope_per_week, NULLIF(sc.demand_noise, 0))
+                 >  {{ var('demand_slope_rising_threshold') }}
+                THEN 'Rising'
+            WHEN SAFE_DIVIDE(sc.demand_slope_per_week, NULLIF(sc.demand_noise, 0))
+                 < -{{ var('demand_slope_rising_threshold') }}
+                THEN 'Falling'
+            ELSE 'Stable'
+        END                                                                         as demand_state,
 
         -- Seasonality: compare recent 4 weeks to same period last year
         CASE
@@ -176,11 +233,12 @@ final as (
         cs.weeks_with_data
 
     from recent_4wk        r
-    left join latest_week  lw  on r.category = lw.category
-    left join prior_4wk    p   on r.category = p.category
-    left join earlier_4wk  ew  on r.category = ew.category
+    left join latest_week   lw  on r.category = lw.category
+    left join prior_4wk     p   on r.category = p.category
+    left join earlier_4wk   ew  on r.category = ew.category
     left join prior_year_4wk py on r.category = py.category
     left join category_stats cs on r.category = cs.category
+    left join slope_calc    sc  on r.category = sc.category
 
 )
 

@@ -1,7 +1,7 @@
 {{
     config(
         materialized = 'table',
-        description  = 'Full pricing intelligence engine: Kroger vs Walmart DFW per store × category, with elasticity-adjusted action cascade and plain-English reasons.'
+        description  = 'Full pricing intelligence engine: Kroger vs Walmart DFW per store × category, with elasticity-adjusted action cascade and plain-English reasons. Score version: v4_statistical_calibration.'
     )
 }}
 
@@ -12,19 +12,23 @@
     1. Category elasticity prior — industry knowledge; replaced by data-derived elasticity
        when 6+ months of collection accumulates.
     2. Competitor prices by category — Walmart DFW store 2105 via SerpAPI, grouped per
-       category (fixes the previous month-level aggregation that blended all categories).
-    3. Kroger avg price per store × category — directly from stg_kroger_prices.
+       category. Median used since v4 to reduce sensitivity to pack-size outliers.
+    3. Kroger median price per store × category — outliers >5× category median excluded.
     4. Scoring inputs from marts (demand gap, shelf risk, price margin, confidence).
     5. Markdown safety, pricing power, demand signal, price gap confidence.
     6. Action cascade (8 levels, first match wins).
 
-  Score version: v3_category_prices
-    vs v2_with_trends: competitor price now category-specific, not a monthly overall average.
+  Score version: v4_statistical_calibration
+    vs v3_category_prices:
+      - price_gap_pct: NULL propagates honestly (no COALESCE-to-0 false gaps)
+      - kroger/competitor prices: median replaces mean (outlier-robust)
+      - price_position bands: CV-calibrated per category (replaces fixed ±10%)
+      - price_gap_confidence_weight: smooth saturation curve + private label penalty
+      - kroger_private_label_share: new output column for dashboard transparency
+      - price_position_threshold / category_cv_pct: new output columns
 */
 
 -- ── CTE 1: Category elasticity prior ─────────────────────────────────────────
--- Industry-knowledge prior; elasticity_source = 'Industry prior' on every row.
--- Will be replaced with data-derived elasticity when 6+ months of collection accumulates.
 
 with category_elasticity as (
 
@@ -40,6 +44,41 @@ with category_elasticity as (
         STRUCT('household'        as category, 'High'   as elasticity_tier, 35 as premium_tolerance_score),
         STRUCT('coffee tea'       as category, 'Low'    as elasticity_tier, 80 as premium_tolerance_score)
     ])
+
+),
+
+-- ── CTE 2: Category medians — used as outlier-exclusion threshold ─────────────
+-- Computed from all non-null rows. Products priced >5× this threshold are excluded
+-- from per-store aggregations so that e.g. espresso machines don't skew coffee tea.
+
+category_medians as (
+
+    select
+        COALESCE(category, 'Unknown')                           as category_name,
+        APPROX_QUANTILES(price_regular, 100)[OFFSET(50)]        as cat_median
+    from {{ ref('stg_kroger_prices') }}
+    where price_regular is not null
+    group by 1
+
+),
+
+-- ── CTE 3: Category dispersion (post-outlier CV) ──────────────────────────────
+-- Coefficient of variation after excluding extreme outliers.
+-- Drives self-calibrating price_position threshold in scored CTE.
+
+category_dispersion as (
+
+    select
+        COALESCE(k.category, 'Unknown')                         as category_name,
+        ROUND(
+            SAFE_DIVIDE(STDDEV(k.price_regular), AVG(k.price_regular)) * 100,
+        1)                                                      as category_cv_pct
+    from {{ ref('stg_kroger_prices') }} k
+    join category_medians cm
+      on COALESCE(k.category, 'Unknown') = cm.category_name
+    where k.price_regular is not null
+      and k.price_regular <= 5 * cm.cat_median
+    group by 1
 
 ),
 
@@ -108,36 +147,55 @@ location_dim as (
 
 ),
 
--- ── CTE 2: Competitor prices by category ──────────────────────────────────────
--- Walmart DFW store 2105. Grouped by category so each category gets its own
--- benchmark price instead of a blended monthly average across all categories.
+-- ── CTE 4: Competitor prices by category ──────────────────────────────────────
+-- Walmart DFW store 2105. Median since v4 — reduces pack-size outlier sensitivity.
 
 competitor_by_category as (
 
     select
         category,
-        ROUND(AVG(competitor_price), 4)   as competitor_avg_price,
-        COUNT(*)                           as competitor_product_count,
-        MAX(reference_date)                as competitor_last_updated
+        ROUND(APPROX_QUANTILES(competitor_price, 100)[OFFSET(50)], 4)
+                                                                as competitor_avg_price, -- holds MEDIAN since v4 (column name kept for compatibility)
+        COUNT(*)                                                as competitor_product_count,
+        MAX(reference_date)                                     as competitor_last_updated
     from {{ ref('stg_serpapi_prices') }}
     where competitor_price is not null
     group by 1
 
 ),
 
--- ── CTE 3: Kroger prices by store × category ──────────────────────────────────
--- AVG(price_regular) ignores NULLs — products sold by weight are excluded.
--- No date filter: uses the latest loaded batch (single month currently).
+-- ── CTE 5: Kroger prices by store × category ──────────────────────────────────
+-- Median since v4. Outlier exclusion uses IF() so kroger_outliers_excluded
+-- correctly counts excluded rows without being hidden by the WHERE clause.
+-- Private label share: proportion of in-scope SKUs branded Kroger/Simple Truth/Private Selection.
 
 kroger_by_store_category as (
 
     select
-        store_id,
-        COALESCE(category, 'Unknown')          as category_name,
-        ROUND(AVG(price_regular), 4)           as kroger_avg_price,
-        COUNT(distinct product_id)             as kroger_product_count
-    from {{ ref('stg_kroger_prices') }}
-    where price_regular is not null
+        k.store_id,
+        COALESCE(k.category, 'Unknown')                         as category_name,
+        ROUND(APPROX_QUANTILES(
+            IF(k.price_regular <= 5 * cm.cat_median, k.price_regular, NULL),
+            100
+        )[OFFSET(50)], 4)                                       as kroger_avg_price, -- holds MEDIAN since v4 (column name kept for compatibility)
+        COUNT(distinct IF(k.price_regular <= 5 * cm.cat_median, k.product_id, NULL))
+                                                                as kroger_product_count,
+        COUNTIF(k.price_regular > 5 * cm.cat_median)           as kroger_outliers_excluded,
+        ROUND(
+            COUNTIF(
+                k.price_regular <= 5 * cm.cat_median
+                AND (
+                    STARTS_WITH(k.description, 'Kroger')
+                 OR STARTS_WITH(k.description, 'Simple Truth')
+                 OR STARTS_WITH(k.description, 'Private Selection')
+                )
+            )
+            / NULLIF(COUNTIF(k.price_regular <= 5 * cm.cat_median), 0),
+        3)                                                      as kroger_private_label_share
+    from {{ ref('stg_kroger_prices') }} k
+    join category_medians cm
+      on COALESCE(k.category, 'Unknown') = cm.category_name
+    where k.price_regular is not null
     group by 1, 2
 
 ),
@@ -160,13 +218,18 @@ base as (
         loc.store_city,
 
         -- Kroger price: prefer fresh aggregation; fall back to fact_market_signals retail_price
-        COALESCE(k.kroger_avg_price, d.retail_price)    as kroger_avg_price,
-        COALESCE(k.kroger_product_count, 0)             as kroger_product_count,
+        COALESCE(k.kroger_avg_price, d.retail_price)            as kroger_avg_price,
+        COALESCE(k.kroger_product_count, 0)                     as kroger_product_count,
+        COALESCE(k.kroger_outliers_excluded, 0)                 as kroger_outliers_excluded,
+        COALESCE(k.kroger_private_label_share, 0)               as kroger_private_label_share,
 
         -- Category-level Walmart price (NULL when SerpAPI has no data for this category)
         comp.competitor_avg_price,
-        COALESCE(comp.competitor_product_count, 0)      as competitor_product_count,
+        COALESCE(comp.competitor_product_count, 0)              as competitor_product_count,
         comp.competitor_last_updated,
+
+        -- Category dispersion from post-outlier CV
+        cd.category_cv_pct,
 
         -- Mart scores (raw; COALESCEd in scored CTE)
         d.overall_demand_gap_score,
@@ -179,26 +242,30 @@ base as (
         c.overall_confidence_score,
 
         -- Elasticity prior
-        COALESCE(e.elasticity_tier,          'Medium') as elasticity_tier,
-        COALESCE(e.premium_tolerance_score,   50)      as premium_tolerance_score
+        COALESCE(e.elasticity_tier,           'Medium')         as elasticity_tier,
+        COALESCE(e.premium_tolerance_score,    50)              as premium_tolerance_score
 
     from demand           d
     left join risk        r    on d.signal_id      = r.signal_id
     left join price       p    on d.signal_id      = p.signal_id
     left join confidence  c    on d.signal_id      = c.signal_id
-    left join category_dim   cat on d.category_name = cat.category_name
-    left join location_dim   loc on d.store_id      = loc.store_id
+    left join category_dim    cat on d.category_name = cat.category_name
+    left join location_dim    loc on d.store_id      = loc.store_id
     left join kroger_by_store_category k
            on d.store_id       = k.store_id
           and d.category_name  = k.category_name
     left join competitor_by_category comp
            on d.category_name  = comp.category
+    left join category_dispersion cd
+           on d.category_name  = cd.category_name
     left join category_elasticity e
            on d.category_name  = e.category
 
 ),
 
--- ── Scored: price gap, position, confidence, and markdown safety ──────────────
+-- ── Scored: price gap, confidence, and markdown safety ────────────────────────
+-- price_position is computed in derived so it can reference price_gap_pct
+-- and price_position_threshold without repeating the formula.
 
 scored as (
 
@@ -215,62 +282,59 @@ scored as (
 
         kroger_avg_price,
         kroger_product_count,
+        kroger_outliers_excluded,
+        kroger_private_label_share,
         competitor_avg_price,
         competitor_product_count,
         competitor_last_updated,
 
+        -- Category dispersion and self-calibrating band
+        -- tight categories (cereal CV≈30%) floor at 8%; dispersed (coffee CV≈157%) cap at 25%
+        COALESCE(category_cv_pct, 30.0)                         as category_cv_pct,
+        GREATEST({{ var('min_price_gap_threshold') }}, LEAST({{ var('max_price_gap_threshold') }},
+            COALESCE(category_cv_pct, 30.0) * {{ var('cv_multiplier') }}
+        ))                                                      as price_position_threshold,
+
         -- COALESCE all mart scores so later CTEs never see NULL
-        COALESCE(overall_demand_gap_score, 50) as overall_demand_gap_score,
-        COALESCE(category_momentum_score,  50) as category_momentum_score,
-        COALESCE(intent_quality_score,     50) as intent_quality_score,
-        COALESCE(competitive_threat_risk,  50) as competitive_threat_risk,
-        COALESCE(demand_decay_risk,        35) as demand_decay_risk,
-        COALESCE(margin_pressure_risk,     30) as margin_pressure_risk,
-        COALESCE(promo_risk_score,         30) as promo_risk_score,
-        COALESCE(overall_confidence_score, 50) as confidence_score,
+        COALESCE(overall_demand_gap_score, 50)                  as overall_demand_gap_score,
+        COALESCE(category_momentum_score,  50)                  as category_momentum_score,
+        COALESCE(intent_quality_score,     50)                  as intent_quality_score,
+        COALESCE(competitive_threat_risk,  50)                  as competitive_threat_risk,
+        COALESCE(demand_decay_risk,        35)                  as demand_decay_risk,
+        COALESCE(margin_pressure_risk,     30)                  as margin_pressure_risk,
+        COALESCE(promo_risk_score,         30)                  as promo_risk_score,
+        COALESCE(overall_confidence_score, 50)                  as confidence_score,
 
         elasticity_tier,
         premium_tolerance_score,
 
-        -- Price gap: positive = Kroger above Walmart
-        ROUND(
-            SAFE_DIVIDE(
-                COALESCE(kroger_avg_price, 0) - COALESCE(competitor_avg_price, 0),
-                NULLIF(COALESCE(competitor_avg_price, 0), 0)
-            ) * 100,
-        2)                                                  as price_gap_pct,
-
-        -- Price position label
+        -- Price gap: NULL propagates honestly when either price is missing.
+        -- Previous v3 COALESCE-to-0 produced false -100% gaps for stores
+        -- where Kroger median was not available.
         CASE
-            WHEN competitor_avg_price IS NULL
-                THEN 'Unknown'
-            WHEN SAFE_DIVIDE(
-                    COALESCE(kroger_avg_price, 0) - competitor_avg_price,
+            WHEN kroger_avg_price IS NULL OR competitor_avg_price IS NULL
+                THEN NULL
+            ELSE ROUND(
+                SAFE_DIVIDE(
+                    kroger_avg_price - competitor_avg_price,
                     NULLIF(competitor_avg_price, 0)
-                 ) * 100 > 10
-                THEN 'Overpriced'
-            WHEN SAFE_DIVIDE(
-                    COALESCE(kroger_avg_price, 0) - competitor_avg_price,
-                    NULLIF(competitor_avg_price, 0)
-                 ) * 100 < -10
-                THEN 'Underpriced'
-            ELSE 'Fair'
-        END                                                 as price_position,
+                ) * 100,
+            2)
+        END                                                     as price_gap_pct,
 
-        -- Competitor data confidence — governs how much to trust the price gap
+        -- Competitor data confidence label (step tiers — unchanged from v3)
         CASE
             WHEN competitor_product_count >= 20 THEN 'High'
             WHEN competitor_product_count >= 10 THEN 'Medium'
             WHEN competitor_product_count >= 3  THEN 'Low'
             ELSE 'Missing'
-        END                                                 as price_gap_confidence,
+        END                                                     as price_gap_confidence,
 
-        CASE
-            WHEN competitor_product_count >= 20 THEN 1.00
-            WHEN competitor_product_count >= 10 THEN 0.70
-            WHEN competitor_product_count >= 3  THEN 0.40
-            ELSE 0.00
-        END                                                 as price_gap_confidence_weight,
+        -- Smooth confidence weight: n/(n+15), so 6→0.29, 16→0.52, 40→0.73.
+        -- Basket-mismatch risk is handled by price_gap_reliability gate (not here).
+        ROUND(
+            SAFE_DIVIDE(competitor_product_count, competitor_product_count + {{ var('confidence_smoothing_k') }}),
+        3)                                                      as price_gap_confidence_weight,
 
         -- ── Markdown safety ────────────────────────────────────────────────────
         -- Inverse of markdown risk. High = safe to cut price; Low = cutting is dangerous.
@@ -280,7 +344,7 @@ scored as (
                 + COALESCE(promo_risk_score,   30) * 0.30
                 + COALESCE(demand_decay_risk,  35) * 0.25
             )
-        ))                                                  as markdown_safety_score,
+        ))                                                      as markdown_safety_score,
 
         load_timestamp
 
@@ -295,18 +359,32 @@ derived as (
     select
         *,
 
-        -- Adjusted gap: discounts the gap when competitor sample is thin
-        ROUND(price_gap_pct * price_gap_confidence_weight, 2) as adjusted_price_gap_pct,
+        -- Adjusted gap: discounts the gap when competitor sample is thin.
+        -- NULL when price_gap_pct is NULL (honest propagation).
+        CASE
+            WHEN price_gap_pct IS NULL THEN NULL
+            ELSE ROUND(price_gap_pct * price_gap_confidence_weight, 2)
+        END                                                     as adjusted_price_gap_pct,
+
+        -- Price position: CV-calibrated band (replaces fixed ±10% from v3).
+        -- Moved here from scored so it can reference price_gap_pct and
+        -- price_position_threshold without repeating the division formula.
+        CASE
+            WHEN competitor_avg_price IS NULL OR kroger_avg_price IS NULL
+                THEN 'Unknown'
+            WHEN price_gap_pct >  price_position_threshold THEN 'Overpriced'
+            WHEN price_gap_pct < -price_position_threshold THEN 'Underpriced'
+            ELSE 'Fair'
+        END                                                     as price_position,
 
         -- Demand signal tier
-        -- Note: threshold set at 60 (not 65) to match current single-month data
-        -- range of 39–63. Raise to 65 once 6+ months of data validates higher
-        -- score differentiation.
+        -- Threshold set at 60 to match current single-month range (39-63).
+        -- Raise to 65 once 6+ months of data validates higher differentiation.
         CASE
             WHEN overall_demand_gap_score >= {{ var('demand_high_threshold') }}   THEN 'High'
             WHEN overall_demand_gap_score >= {{ var('demand_medium_threshold') }} THEN 'Medium'
             ELSE 'Low'
-        END                                                 as demand_signal,
+        END                                                     as demand_signal,
 
         -- ── Pricing power ──────────────────────────────────────────────────────
         -- Incorporates the elasticity-derived premium_tolerance_score so that
@@ -318,7 +396,7 @@ derived as (
             + premium_tolerance_score * 0.20
             + markdown_safety_score   * 0.15
             + confidence_score        * 0.15
-        ))                                                  as pricing_power_score,
+        ))                                                      as pricing_power_score,
 
         -- Competitive intensity: market density of competitor SKUs in this category
         CASE
@@ -326,7 +404,7 @@ derived as (
             WHEN competitor_product_count >= 15 THEN 'Competitive'
             WHEN competitor_product_count >= 5  THEN 'Emerging'
             ELSE 'Sparse'
-        END                                                 as competitive_intensity,
+        END                                                     as competitive_intensity,
 
         -- How relevant is Walmart as a price benchmark for this category?
         CASE
@@ -337,7 +415,7 @@ derived as (
             WHEN LOWER(category_name) IN ('beverages','coffee tea','personal care','meat seafood')
                 THEN 'Low'
             ELSE 'Unknown'
-        END                                                 as competitor_relevance_level,
+        END                                                     as competitor_relevance_level,
 
         CASE
             WHEN LOWER(category_name) = 'household'
@@ -361,7 +439,34 @@ derived as (
             WHEN LOWER(category_name) = 'meat seafood'
                 THEN 'Quality-differentiated category. Walmart price comparison low relevance without quality normalization.'
             ELSE 'Competitor relevance not classified.'
-        END                                                 as competitor_relevance_reason
+        END                                                     as competitor_relevance_reason,
+
+        -- Gap reliability gate: bars non-comparable baskets from driving actions.
+        -- comp_n < 10 = thin sample; |gap| > 50% = likely basket mismatch (e.g. frozen
+        -- single-serve meals vs full-aisle); |gap| > 25% = directional uncertainty.
+        CASE
+            WHEN competitor_avg_price IS NULL
+              OR kroger_avg_price IS NULL              THEN 'Unknown'
+            WHEN competitor_product_count < {{ var('reliability_min_competitor_count') }}  THEN 'Low'
+            WHEN ABS(price_gap_pct) > {{ var('reliability_low_gap_threshold') }}          THEN 'Low'
+            WHEN ABS(price_gap_pct) > {{ var('reliability_medium_gap_threshold') }}       THEN 'Medium'
+            ELSE 'High'
+        END                                                     as price_gap_reliability,
+
+        CASE
+            WHEN competitor_avg_price IS NULL OR kroger_avg_price IS NULL
+                THEN 'No competitor benchmark available for this category.'
+            WHEN competitor_product_count < {{ var('reliability_min_competitor_count') }}
+                THEN CONCAT(
+                    'Thin competitor sample (', CAST(competitor_product_count AS STRING),
+                    ' products) — benchmark covers a narrow slice of the category.'
+                )
+            WHEN ABS(price_gap_pct) > {{ var('reliability_low_gap_threshold') }}
+                THEN 'Implausible gap magnitude indicates non-comparable Kroger vs Walmart product baskets — not used for pricing actions.'
+            WHEN ABS(price_gap_pct) > {{ var('reliability_medium_gap_threshold') }}
+                THEN 'Moderate gap with some basket-composition uncertainty — directional only.'
+            ELSE 'Comparable baskets with adequate sample — gap is actionable.'
+        END                                                     as price_gap_reliability_reason
 
     from scored
 
@@ -383,7 +488,7 @@ actioned as (
             WHEN demand_signal = 'High'   AND price_position = 'Fair'        THEN 'Strong Position'
             WHEN demand_signal = 'Medium' AND price_position = 'Fair'        THEN 'Stable Position'
             ELSE 'Weak Demand'
-        END                                                 as pricing_situation,
+        END                                                     as pricing_situation,
 
         -- Action cascade (first match wins)
         CASE
@@ -419,19 +524,23 @@ actioned as (
              )
                 THEN 'Hold Premium'
 
-            -- 5. Reduce Price (Full): overpriced, elastic category, safe margins, and Walmart is a credible benchmark
+            -- 5. Reduce Price (Full): overpriced, elastic category, safe margins, credible benchmark
+            -- price_gap_reliability guard prevents basket-mismatch gaps (frozen, dairy, etc.)
+            -- from generating spurious cut recommendations
             WHEN price_position = 'Overpriced'
              AND demand_signal IN ('Low', 'Medium')
              AND adjusted_price_gap_pct > 10
              AND markdown_safety_score >= 60
              AND elasticity_tier IN ('High', 'Medium')
              AND competitor_relevance_level IN ('High', 'Medium')
+             AND price_gap_reliability = 'High'
                 THEN 'Reduce Price'
 
             -- 6. Reduce Price (Partial): overpriced, margin caution — any elasticity
             WHEN price_position = 'Overpriced'
              AND adjusted_price_gap_pct > 10
              AND markdown_safety_score BETWEEN {{ var('avoid_markdown_safety_threshold') }} AND 59
+             AND price_gap_reliability = 'High'
                 THEN 'Reduce Price'
 
             -- 7. Protect Price: fair pricing with adequate demand — hold, don't discount
@@ -445,16 +554,33 @@ actioned as (
             -- 8. Monitor: mixed signals or low elasticity premium not yet justified
             ELSE 'Monitor'
 
-        END                                                 as recommended_price_action,
+        END                                                     as recommended_price_action,
 
         -- Markdown intensity label (used in recommended_price and reason text)
         CASE
             WHEN markdown_safety_score >= 60 THEN 'Full'
             WHEN markdown_safety_score >= 40 THEN 'Partial'
             ELSE 'Not Safe'
-        END                                                 as _intensity
+        END                                                     as _intensity
 
     from derived
+
+),
+
+-- ── Tiered: within-category gap tercile ──────────────────────────────────────
+-- relative_gap_tier is PEER-CONTEXT ONLY — never feeds the action cascade.
+-- CV band remains the action classifier; NTILE rank is a diagnostic lens.
+-- N=20 stores per category → terciles are the correct resolution (not deciles).
+
+tiered as (
+
+    select
+        *,
+        NTILE(3) OVER (
+            PARTITION BY category_name
+            ORDER BY ABS(price_gap_pct)
+        )                                                       as gap_tile_raw
+    from actioned
 
 )
 
@@ -462,7 +588,7 @@ actioned as (
 
 select
     -- Keys and identifiers
-    reference_month                                     as scoring_date,
+    reference_month                                             as scoring_date,
     category_key,
     location_key,
     category_name,
@@ -470,9 +596,11 @@ select
     store_id,
 
     -- Price inputs
-    ROUND(kroger_avg_price,     2)                      as kroger_avg_price,
+    ROUND(kroger_avg_price,     2)                              as kroger_avg_price,
     kroger_product_count,
-    ROUND(competitor_avg_price, 2)                      as competitor_avg_price,
+    kroger_outliers_excluded,
+    kroger_private_label_share,
+    ROUND(competitor_avg_price, 2)                              as competitor_avg_price,
     competitor_product_count,
     competitive_intensity,
     competitor_relevance_level,
@@ -483,27 +611,41 @@ select
     price_gap_pct,
     adjusted_price_gap_pct,
     price_position,
+    price_position_threshold,
+    category_cv_pct,
     price_gap_confidence,
     price_gap_confidence_weight,
+    price_gap_reliability,
+    price_gap_reliability_reason,
+    -- relative_gap_tier is PEER-CONTEXT ONLY, never feeds the action cascade
+    -- (CV band remains the classifier; NTILE over N=20 stores is diagnostic only)
+    CASE
+        WHEN price_gap_pct IS NULL THEN NULL
+        WHEN gap_tile_raw = 3 THEN 'Top'
+        WHEN gap_tile_raw = 2 THEN 'Middle'
+        ELSE 'Bottom'
+    END                                                         as relative_gap_tier,
+    'CV calibrated absolute band'                               as price_band_method,
+    '{{ var("threshold_config_version") }}'                     as threshold_config_version,
 
     -- Demand
     demand_signal,
-    ROUND(overall_demand_gap_score, 2)                  as overall_demand_gap_score,
-    ROUND(category_momentum_score,  2)                  as category_momentum_score,
+    ROUND(overall_demand_gap_score, 2)                          as overall_demand_gap_score,
+    ROUND(category_momentum_score,  2)                          as category_momentum_score,
 
     -- Margin
-    ROUND(margin_pressure_risk,     2)                  as margin_pressure_risk,
-    ROUND(promo_risk_score,         2)                  as promo_risk_score,
-    ROUND(demand_decay_risk,        2)                  as demand_decay_risk,
-    ROUND(markdown_safety_score,    2)                  as markdown_safety_score,
+    ROUND(margin_pressure_risk,     2)                          as margin_pressure_risk,
+    ROUND(promo_risk_score,         2)                          as promo_risk_score,
+    ROUND(demand_decay_risk,        2)                          as demand_decay_risk,
+    ROUND(markdown_safety_score,    2)                          as markdown_safety_score,
 
     -- Elasticity
     elasticity_tier,
     premium_tolerance_score,
-    'Industry prior'                                    as elasticity_source,
+    'Industry prior'                                            as elasticity_source,
 
     -- Composite scores
-    ROUND(pricing_power_score,      2)                  as pricing_power_score,
+    ROUND(pricing_power_score,      2)                          as pricing_power_score,
     pricing_situation,
 
     -- Action
@@ -513,7 +655,7 @@ select
     CASE
         WHEN recommended_price_action = 'Reduce Price' THEN _intensity
         ELSE 'N/A'
-    END                                                 as price_reduction_intensity,
+    END                                                         as price_reduction_intensity,
 
     -- Recommended shelf price
     ROUND(
@@ -534,7 +676,7 @@ select
                 )
             ELSE COALESCE(kroger_avg_price, 0)
         END,
-    2)                                                  as recommended_price,
+    2)                                                          as recommended_price,
 
     -- Plain-English reason with live score values
     CASE recommended_price_action
@@ -550,20 +692,20 @@ select
         )
         WHEN 'Raise Price' THEN CONCAT(
             'Kroger is ',
-            CAST(CAST(ROUND(ABS(price_gap_pct), 0) AS INT64) AS STRING),
+            CAST(CAST(ROUND(ABS(COALESCE(price_gap_pct, 0)), 0) AS INT64) AS STRING),
             '% below Walmart. Demand is strong (',
             CAST(ROUND(overall_demand_gap_score, 0) AS STRING),
             '/100) and pricing power supports an increase.'
         )
         WHEN 'Hold Premium' THEN CONCAT(
-            'Kroger is ', CAST(ROUND(price_gap_pct, 0) AS STRING),
+            'Kroger is ', CAST(ROUND(COALESCE(price_gap_pct, 0), 0) AS STRING),
             '% above Walmart but demand is strong (',
             CAST(ROUND(overall_demand_gap_score, 0) AS STRING),
             '/100) and category has premium tolerance (',
             CAST(premium_tolerance_score AS STRING), '/100). Hold price.'
         )
         WHEN 'Reduce Price' THEN CONCAT(
-            'Kroger is ', CAST(ROUND(price_gap_pct, 0) AS STRING),
+            'Kroger is ', CAST(ROUND(COALESCE(price_gap_pct, 0), 0) AS STRING),
             '% above Walmart. ',
             CASE _intensity
                 WHEN 'Full'    THEN 'Demand and margin support a full price reduction.'
@@ -581,47 +723,47 @@ select
             '. Pricing situation: ', pricing_situation,
             '. Revisit next month.'
         )
-    END                                                 as price_action_reason,
+    END                                                         as price_action_reason,
 
     -- Action confidence
     CASE
         WHEN price_gap_confidence = 'High'
-         AND ABS(adjusted_price_gap_pct) > 15
+         AND ABS(COALESCE(adjusted_price_gap_pct, 0)) > 15
          AND overall_demand_gap_score > 60
          AND markdown_safety_score > 60
             THEN 'High'
         WHEN price_gap_confidence IN ('High', 'Medium')
-         AND ABS(adjusted_price_gap_pct) > 10
+         AND ABS(COALESCE(adjusted_price_gap_pct, 0)) > 10
             THEN 'Medium'
         ELSE 'Low'
-    END                                                 as action_confidence_level,
+    END                                                         as action_confidence_level,
 
     CASE
         WHEN price_gap_confidence = 'High'
-         AND ABS(adjusted_price_gap_pct) > 15
+         AND ABS(COALESCE(adjusted_price_gap_pct, 0)) > 15
          AND overall_demand_gap_score > 60
          AND markdown_safety_score > 60
             THEN 85
         WHEN price_gap_confidence IN ('High', 'Medium')
-         AND ABS(adjusted_price_gap_pct) > 10
+         AND ABS(COALESCE(adjusted_price_gap_pct, 0)) > 10
             THEN 60
         ELSE 35
-    END                                                 as action_confidence_score,
+    END                                                         as action_confidence_score,
 
     -- Confidence inputs
-    ROUND(confidence_score,         2)                  as confidence_score,
-    ROUND(competitive_threat_risk,  2)                  as competitive_threat_risk,
+    ROUND(confidence_score,         2)                          as confidence_score,
+    ROUND(competitive_threat_risk,  2)                          as competitive_threat_risk,
 
     -- Signal labels
     CASE
         WHEN competitor_avg_price IS NOT NULL THEN 'MEASURED'
         ELSE 'PROXY'
-    END                                                 as signal_type,
-    'Decision rule'                                     as pricing_signal_type,
+    END                                                         as signal_type,
+    'Decision rule'                                             as pricing_signal_type,
 
     -- Metadata
-    'v3_category_prices'                                as score_version,
-    CURRENT_TIMESTAMP()                                 as load_timestamp
+    'v4_statistical_calibration'                                as score_version,
+    CURRENT_TIMESTAMP()                                         as load_timestamp
 
-from actioned
+from tiered
 order by scoring_date desc, pricing_power_score desc

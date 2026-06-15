@@ -8,6 +8,7 @@ import time
 import base64
 import logging
 import datetime
+import argparse
 import requests
 import pandas as pd
 
@@ -57,6 +58,53 @@ def _upload(df: pd.DataFrame, table_name: str,
     job = BQ.load_table_from_dataframe(df, destination, job_config=job_config)
     job.result()
     log.info("  → %d rows  →  %s  [%s]", len(df), destination, write_disposition)
+
+
+def _upload_append_idempotent(df: pd.DataFrame, table_name: str,
+                               date_col: str = "collected_at",
+                               min_rows: int = 0) -> None:
+    """
+    Idempotent daily-partition load — no DML required (works on free tier).
+
+    Uses the BigQuery partition decorator ($YYYYMMDD) with WRITE_TRUNCATE,
+    which atomically replaces only that day's partition without affecting
+    other dates. History accumulates across runs on different days.
+    Same-day reruns replace the partition cleanly (no duplicates).
+
+    Tables must be partitioned by DATE(collected_at) — created that way
+    on first load or pre-created via DDL. Reference series (fred, bls)
+    keep WRITE_TRUNCATE via _upload (they are not time-series of runs).
+
+    min_rows: abort (raise) before writing if len(df) < min_rows.
+    Prevents a partial API failure from silently overwriting a healthy
+    partition with thin data.
+    """
+    batch_date  = pd.to_datetime(df[date_col]).dt.date.iloc[0]
+    partition   = batch_date.strftime('%Y%m%d')   # e.g. "20260610"
+    destination = f"{PROJECT_ID}.{DATASET}.{table_name}${partition}"
+
+    if min_rows > 0 and len(df) < min_rows:
+        msg = (
+            f"[ABORT] {table_name}${partition}: "
+            f"got {len(df):,} rows, need >= {min_rows:,}. "
+            f"Partition NOT written — check API response for partial failure."
+        )
+        log.error(msg)
+        raise RuntimeError(msg)
+
+    job_config = bigquery.LoadJobConfig(
+        write_disposition="WRITE_TRUNCATE",        # replaces this partition only
+        time_partitioning=bigquery.TimePartitioning(
+            type_=bigquery.TimePartitioningType.DAY,
+            field=date_col,
+        ),
+    )
+    job = BQ.load_table_from_dataframe(df, destination, job_config=job_config)
+    job.result()
+    log.info(
+        "  → %d rows  →  %s.%s$%s  [PARTITION REPLACE]",
+        len(df), DATASET, table_name, partition,
+    )
 
 
 # ── Collectors ────────────────────────────────────────────────────────────────
@@ -268,7 +316,7 @@ def collect_kroger_prices() -> bool:
         df["price_regular"] = pd.to_numeric(df["price_regular"], errors="coerce")
         df["price_promo"]   = pd.to_numeric(df["price_promo"],   errors="coerce")
 
-        _upload(df, "kroger_prices_raw")
+        _upload_append_idempotent(df, "kroger_prices_raw", min_rows=8000)
         log.info(
             "[3/5] Kroger prices — PASS  (%d total products across %d stores × %d categories)",
             len(df), len(KROGER_STORES), len(CATEGORIES),
@@ -481,7 +529,7 @@ def collect_serpapi() -> bool:
         df["competitor_price"] = pd.to_numeric(df["competitor_price"], errors="coerce")
         df["price_per_unit"]   = pd.to_numeric(df["price_per_unit"],   errors="coerce")
 
-        _upload(df, "serpapi_prices_raw")
+        _upload_append_idempotent(df, "serpapi_prices_raw", min_rows=200)
         log.info(
             "[5/5] SerpAPI — PASS  (%d prices, %d searches used)",
             len(df), searches_used,
@@ -496,8 +544,25 @@ def collect_serpapi() -> bool:
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="TrendShelf Bronze Layer Collector",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["prices", "full"],
+        default="full",
+        help=(
+            "prices = Kroger + SerpAPI only (weekly, ~15 min, no 429 risk); "
+            "full = all five sources including Google Trends (bi-weekly). "
+            "Default: full."
+        ),
+    )
+    args = parser.parse_args()
+    mode = args.mode
+
     print("=" * 64)
     print("  TrendShelf - Bronze Layer Collection -> BigQuery")
+    print(f"  MODE          : {mode.upper()}")
     print(f"  Run timestamp : {RUN_TS.strftime('%Y-%m-%d %H:%M:%S UTC')}")
     print(f"  Destination   : {PROJECT_ID}.{DATASET}")
     print(f"  Stores        : {len(KROGER_STORES)}   Categories : {len(CATEGORIES)}")
@@ -505,37 +570,52 @@ def main() -> int:
 
     results = {}
 
-    if COLLECT_GOOGLE_TRENDS:
-        results["google_trends_raw"] = collect_google_trends()
-        time.sleep(3)
+    # ── Google Trends: full mode only ─────────────────────────────────────────
+    # prices mode skips entirely — no attempt, no 429 risk, no wait.
+    if mode == "full":
+        if COLLECT_GOOGLE_TRENDS:
+            results["google_trends_raw"] = collect_google_trends()
+            time.sleep(3)
+        else:
+            print("  [SKIP] Google Trends — COLLECT_GOOGLE_TRENDS=False in config")
     else:
-        print("  [SKIP] Google Trends — rate-limited; existing history intact")
+        print("  [SKIP] Google Trends — prices mode (weekly run)")
 
-    if COLLECT_FRED:
-        results["fred_ppi_raw"] = collect_fred_ppi()
+    # ── FRED PPI: full mode only ───────────────────────────────────────────────
+    if mode == "full":
+        if COLLECT_FRED:
+            results["fred_ppi_raw"] = collect_fred_ppi()
+        else:
+            print("  [SKIP] FRED PPI — COLLECT_FRED=False in config")
     else:
-        print("  [SKIP] FRED PPI — flag COLLECT_FRED=False")
+        print("  [SKIP] FRED PPI — prices mode (weekly run)")
 
-    if COLLECT_BLS:
-        results["bls_cpi_raw"] = collect_bls_cpi()
+    # ── BLS CPI: full mode only ────────────────────────────────────────────────
+    if mode == "full":
+        if COLLECT_BLS:
+            results["bls_cpi_raw"] = collect_bls_cpi()
+        else:
+            print("  [SKIP] BLS CPI — COLLECT_BLS=False in config")
     else:
-        print("  [SKIP] BLS CPI — flag COLLECT_BLS=False")
+        print("  [SKIP] BLS CPI — prices mode (weekly run)")
 
+    # ── Kroger prices: both modes ──────────────────────────────────────────────
     if COLLECT_KROGER:
         results["kroger_prices_raw"] = collect_kroger_prices()
     else:
-        print("  [SKIP] Kroger prices — flag COLLECT_KROGER=False")
+        print("  [SKIP] Kroger prices — COLLECT_KROGER=False in config")
 
+    # ── SerpAPI competitor prices: both modes ──────────────────────────────────
     if COLLECT_SERPAPI:
         results["serpapi_prices_raw"] = collect_serpapi()
     else:
-        print("  [SKIP] SerpAPI — flag COLLECT_SERPAPI=False")
+        print("  [SKIP] SerpAPI — COLLECT_SERPAPI=False in config")
 
     passed = sum(results.values())
     total  = len(results)
 
     print("\n" + "=" * 64)
-    print("  Collection Summary")
+    print(f"  Collection Summary — MODE: {mode.upper()}")
     print("=" * 64)
     for name, ok in results.items():
         status = "PASS" if ok else "FAIL"

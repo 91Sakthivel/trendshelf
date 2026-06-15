@@ -33,6 +33,10 @@ sources:
         description: >
           Kroger product prices across 20 DFW stores × 10 search categories.
           Up to 50 products per store×category per run. One row per product.
+        loaded_at_field: collected_at
+        freshness:
+          warn_after:  {count: 9,  period: day}
+          error_after: {count: 16, period: day}
         columns:
           - name: product_id
             description: Kroger productId (STRING)
@@ -105,6 +109,10 @@ sources:
           Competitor product prices from SerpAPI Google Shopping.
           Two queries per run: "energy drinks price walmart" and "energy drinks price kroger".
           7-day cache prevents redundant API calls. One row per shopping result.
+        loaded_at_field: collected_at
+        freshness:
+          warn_after:  {count: 9,  period: day}
+          error_after: {count: 16, period: day}
         columns:
           - name: product_name
             description: Product title from Google Shopping result (STRING)

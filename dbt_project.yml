@@ -44,6 +44,21 @@ vars:
   expand_confidence_threshold:       70
   expand_margin_threshold:           70
 
+  # ── Pricing band calibration (v4 — tuning constants, sensitivity-tested) ──────
+  # Empirically derived thresholds once 6+ months of collection accumulates.
+  cv_multiplier:                     0.16
+  min_price_gap_threshold:            8.0
+  max_price_gap_threshold:           25.0
+  # reliability gate
+  reliability_low_gap_threshold:     50.0
+  reliability_medium_gap_threshold:  25.0
+  reliability_min_competitor_count:  10
+  # confidence smoothing (Laplace-style shrinkage toward zero)
+  confidence_smoothing_k:            15.0
+  # demand slope state (t-stat-like ratio threshold)
+  demand_slope_rising_threshold:      0.3
+  threshold_config_version:         'v4_cv_calibrated'
+
 models:
   trendshelf:
     staging:

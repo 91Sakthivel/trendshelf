@@ -258,7 +258,7 @@ scored as (
 
         -- MEASURED when SerpAPI competitor data is available; PROXY when falling back to PPI
         CASE WHEN competitor_avg_price IS NOT NULL THEN 'MEASURED' ELSE 'PROXY' END as signal_type,
-        'v2_with_trends'                                as score_version,
+        'v4_statistical_calibration'                    as score_version,
         CASE
             WHEN competitor_avg_price IS NOT NULL
                 THEN CONCAT(

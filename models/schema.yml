@@ -24,6 +24,11 @@ models:
           - not_null:
               config:
                 severity: warn
+          - dbt_utils.accepted_range:
+              min_value: 0.1
+              max_value: 500
+              config:
+                severity: warn
 
   - name: stg_serpapi_prices
     description: >
@@ -36,7 +41,13 @@ models:
         tests: [not_null]
       - name: competitor_price
         description: Listed price in USD — null/zero rows already filtered
-        tests: [not_null]
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0.1
+              max_value: 500
+              config:
+                severity: warn
 
   - name: stg_fred_ppi
     description: >
@@ -315,7 +326,7 @@ models:
     description: >
       Full pricing intelligence engine. Grain: reference_month × category × store.
       Kroger vs Walmart DFW per store × category with elasticity-adjusted action cascade.
-      Score version: v3_category_prices.
+      Score version: v4_statistical_calibration.
     columns:
       - name: price_gap_confidence
         tests:
@@ -373,3 +384,36 @@ models:
           - not_null
           - accepted_values:
               values: ['Saturated', 'Competitive', 'Emerging', 'Sparse']
+      - name: price_position
+        description: Overpriced / Fair / Underpriced / Unknown — CV-calibrated band per category
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['Overpriced', 'Fair', 'Underpriced', 'Unknown']
+      - name: kroger_private_label_share
+        description: Proportion of Kroger assortment that is private label (Kroger/Simple Truth/Private Selection), 0-1
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+      - name: price_position_threshold
+        description: CV-calibrated gap threshold used for Overpriced/Underpriced classification, range 8-25%
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 8
+              max_value: 25
+      - name: price_gap_confidence_weight
+        description: Smooth confidence weight 0-1 (n/(n+15))
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+      - name: price_gap_reliability
+        description: High / Medium / Low / Unknown — basket comparability gate; Low bars Reduce Price actions
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['High', 'Medium', 'Low', 'Unknown']

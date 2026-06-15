@@ -162,7 +162,7 @@ scored as (
         cpi_trend_direction,
 
         'MEASURED'                                  as signal_type,
-        'v3_trend_features'                         as score_version,
+        'v4_statistical_calibration'                as score_version,
         CASE
             WHEN avg_search_interest IS NULL
                 THEN 'No Google Trends data for this category'

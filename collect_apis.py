@@ -419,6 +419,7 @@ def collect_serpapi() -> bool:
 
         all_rows = []
         searches_used = 0
+        failed_categories = []
 
         for category in stale:
             if searches_used >= 10:
@@ -427,19 +428,46 @@ def collect_serpapi() -> bool:
 
             query = WALMART_QUERIES.get(category, category)
 
-            resp = requests.get(
-                "https://serpapi.com/search",
-                params={
-                    "engine":   "walmart",
-                    "query":    query,
-                    "store_id": WALMART_DFW_STORE_ID,
-                    "api_key":  SERPAPI_KEY,
-                    "sort":     "best_match",
-                },
-                timeout=15,
-            )
-            resp.raise_for_status()
-            data = resp.json()
+            # Retry up to 2 extra times on timeout/connection errors.
+            # Non-retryable errors (4xx, bad JSON) break immediately.
+            data = None
+            last_err = None
+            for attempt in range(3):
+                try:
+                    resp = requests.get(
+                        "https://serpapi.com/search",
+                        params={
+                            "engine":   "walmart",
+                            "query":    query,
+                            "store_id": WALMART_DFW_STORE_ID,
+                            "api_key":  SERPAPI_KEY,
+                            "sort":     "best_match",
+                        },
+                        timeout=45,
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+                    break
+                except (requests.Timeout, requests.ConnectionError) as e:
+                    last_err = e
+                    if attempt < 2:
+                        log.warning(
+                            "  Search — %-25s — attempt %d timed out, retrying in 3s...",
+                            category, attempt + 1,
+                        )
+                        time.sleep(3)
+                except Exception as e:
+                    last_err = e
+                    break  # non-retryable (4xx, JSON decode error, etc.)
+
+            if data is None:
+                log.warning(
+                    "  Search — %-25s — FAILED after 3 attempts: %s",
+                    category, last_err,
+                )
+                failed_categories.append(category)
+                continue
+
             results = data.get("organic_results", [])
             searches_used += 1
 
@@ -521,6 +549,20 @@ def collect_serpapi() -> bool:
                 searches_used, category, row_count, avg_price,
             )
 
+        if failed_categories:
+            log.warning(
+                "[5/5] SerpAPI — %d categories failed: %s",
+                len(failed_categories), failed_categories,
+            )
+
+        succeeded = len(stale) - len(failed_categories)
+        if succeeded < 8:
+            log.error(
+                "[5/5] SerpAPI — only %d/%d categories succeeded (need >= 8), skipping upload",
+                succeeded, len(stale),
+            )
+            return False
+
         if not all_rows:
             log.warning("[5/5] SerpAPI — no parseable prices returned")
             return False
@@ -531,8 +573,8 @@ def collect_serpapi() -> bool:
 
         _upload_append_idempotent(df, "serpapi_prices_raw", min_rows=200)
         log.info(
-            "[5/5] SerpAPI — PASS  (%d prices, %d searches used)",
-            len(df), searches_used,
+            "[5/5] SerpAPI — PASS  (%d prices, %d searches used, %d categories failed)",
+            len(df), searches_used, len(failed_categories),
         )
         return True
 

@@ -47,6 +47,27 @@ with category_elasticity as (
 
 ),
 
+-- ── Anchor: latest collection dates ──────────────────────────────────────────
+-- All Kroger and SerpAPI reads pin to these so medians are single-date, not blended.
+-- serpapi_asof carries forward the most recent Walmart pull on or before the Kroger date,
+-- which keeps the mart correct when --mode kroger eventually pushes Kroger ahead of SerpAPI.
+
+latest_dates as (
+
+    select MAX(DATE(collected_at)) as kroger_date
+    from {{ ref('stg_kroger_prices') }}
+
+),
+
+serpapi_asof as (
+
+    select MAX(DATE(s.collected_at)) as serpapi_date
+    from {{ ref('stg_serpapi_prices') }} s
+    cross join latest_dates ld
+    where DATE(s.collected_at) <= ld.kroger_date
+
+),
+
 -- ── CTE 2: Category medians — used as outlier-exclusion threshold ─────────────
 -- Computed from all non-null rows. Products priced >5× this threshold are excluded
 -- from per-store aggregations so that e.g. espresso machines don't skew coffee tea.
@@ -57,7 +78,9 @@ category_medians as (
         COALESCE(category, 'Unknown')                           as category_name,
         APPROX_QUANTILES(price_regular, 100)[OFFSET(50)]        as cat_median
     from {{ ref('stg_kroger_prices') }}
+    cross join latest_dates ld
     where price_regular is not null
+      and DATE(collected_at) = ld.kroger_date
     group by 1
 
 ),
@@ -74,10 +97,12 @@ category_dispersion as (
             SAFE_DIVIDE(STDDEV(k.price_regular), AVG(k.price_regular)) * 100,
         1)                                                      as category_cv_pct
     from {{ ref('stg_kroger_prices') }} k
+    cross join latest_dates ld
     join category_medians cm
       on COALESCE(k.category, 'Unknown') = cm.category_name
     where k.price_regular is not null
       and k.price_regular <= 5 * cm.cat_median
+      and DATE(k.collected_at) = ld.kroger_date
     group by 1
 
 ),
@@ -147,6 +172,18 @@ location_dim as (
 
 ),
 
+-- ── Temporal features: pinned to latest Kroger date ───────────────────────────
+-- Provides lag, direction stability, volatility, and directional eligibility
+-- for the snapshot mart. Filtered here to match the latest-partition grain.
+
+temporal_features as (
+
+    select *
+    from {{ ref('int_pricing_temporal_features') }}
+    where kroger_collection_date = (select kroger_date from latest_dates)
+
+),
+
 -- ── CTE 4: Competitor prices by category ──────────────────────────────────────
 -- Walmart DFW store 2105. Median since v4 — reduces pack-size outlier sensitivity.
 
@@ -157,10 +194,12 @@ competitor_by_category as (
         ROUND(APPROX_QUANTILES(competitor_price, 100)[OFFSET(50)], 4)
                                                                 as competitor_avg_price, -- holds MEDIAN since v4 (column name kept for compatibility)
         COUNT(*)                                                as competitor_product_count,
-        MAX(reference_date)                                     as competitor_last_updated
+        MAX(DATE(collected_at))                                 as competitor_price_asof_date
     from {{ ref('stg_serpapi_prices') }}
+    cross join serpapi_asof sa
     where competitor_price is not null
-    group by 1
+      and DATE(collected_at) = sa.serpapi_date
+    group by category
 
 ),
 
@@ -191,11 +230,14 @@ kroger_by_store_category as (
                 )
             )
             / NULLIF(COUNTIF(k.price_regular <= 5 * cm.cat_median), 0),
-        3)                                                      as kroger_private_label_share
+        3)                                                      as kroger_private_label_share,
+        MAX(DATE(k.collected_at))                               as kroger_collection_date
     from {{ ref('stg_kroger_prices') }} k
+    cross join latest_dates ld
     join category_medians cm
       on COALESCE(k.category, 'Unknown') = cm.category_name
     where k.price_regular is not null
+      and DATE(k.collected_at) = ld.kroger_date
     group by 1, 2
 
 ),
@@ -226,7 +268,8 @@ base as (
         -- Category-level Walmart price (NULL when SerpAPI has no data for this category)
         comp.competitor_avg_price,
         COALESCE(comp.competitor_product_count, 0)              as competitor_product_count,
-        comp.competitor_last_updated,
+        k.kroger_collection_date,
+        comp.competitor_price_asof_date,
 
         -- Category dispersion from post-outlier CV
         cd.category_cv_pct,
@@ -243,7 +286,17 @@ base as (
 
         -- Elasticity prior
         COALESCE(e.elasticity_tier,           'Medium')         as elasticity_tier,
-        COALESCE(e.premium_tolerance_score,    50)              as premium_tolerance_score
+        COALESCE(e.premium_tolerance_score,    50)              as premium_tolerance_score,
+
+        -- Temporal features (NULL on first collection; populated from 2nd date onward)
+        tf.previous_price_gap_pct,
+        tf.previous_gap_direction,
+        tf.gap_direction_stable,
+        tf.collection_count,
+        tf.stable_direction_count,
+        tf.price_gap_change_pct,
+        tf.price_gap_volatility,
+        tf.directional_action_eligible
 
     from demand           d
     left join risk        r    on d.signal_id      = r.signal_id
@@ -260,6 +313,9 @@ base as (
            on d.category_name  = cd.category_name
     left join category_elasticity e
            on d.category_name  = e.category
+    left join temporal_features tf
+           on d.store_id       = tf.store_id
+          and d.category_name  = tf.category_name
 
 ),
 
@@ -286,7 +342,10 @@ scored as (
         kroger_private_label_share,
         competitor_avg_price,
         competitor_product_count,
-        competitor_last_updated,
+        kroger_collection_date,
+        competitor_price_asof_date,
+        DATE_DIFF(kroger_collection_date, competitor_price_asof_date, DAY)
+                                                                as competitor_price_staleness_days,
 
         -- Category dispersion and self-calibrating band
         -- tight categories (cereal CV≈30%) floor at 8%; dispersed (coffee CV≈157%) cap at 25%
@@ -307,6 +366,16 @@ scored as (
 
         elasticity_tier,
         premium_tolerance_score,
+
+        -- Temporal features (passed through from base; NULL = first collection)
+        previous_price_gap_pct,
+        previous_gap_direction,
+        gap_direction_stable,
+        collection_count,
+        stable_direction_count,
+        price_gap_change_pct,
+        price_gap_volatility,
+        directional_action_eligible,
 
         -- Price gap: NULL propagates honestly when either price is missing.
         -- Previous v3 COALESCE-to-0 produced false -100% gaps for stores
@@ -448,6 +517,7 @@ derived as (
             WHEN competitor_avg_price IS NULL
               OR kroger_avg_price IS NULL              THEN 'Unknown'
             WHEN competitor_product_count < {{ var('reliability_min_competitor_count') }}  THEN 'Low'
+            WHEN competitor_price_staleness_days > {{ var('max_competitor_staleness_days') }}  THEN 'Low'
             WHEN ABS(price_gap_pct) > {{ var('reliability_low_gap_threshold') }}          THEN 'Low'
             WHEN ABS(price_gap_pct) > {{ var('reliability_medium_gap_threshold') }}       THEN 'Medium'
             ELSE 'High'
@@ -460,6 +530,12 @@ derived as (
                 THEN CONCAT(
                     'Thin competitor sample (', CAST(competitor_product_count AS STRING),
                     ' products) — benchmark covers a narrow slice of the category.'
+                )
+            WHEN competitor_price_staleness_days > {{ var('max_competitor_staleness_days') }}
+                THEN CONCAT(
+                    'Competitor benchmark is ', CAST(competitor_price_staleness_days AS STRING),
+                    ' days old — stale beyond ', CAST({{ var('max_competitor_staleness_days') }} AS STRING),
+                    '-day limit. Not used for pricing actions.'
                 )
             WHEN ABS(price_gap_pct) > {{ var('reliability_low_gap_threshold') }}
                 THEN 'Implausible gap magnitude indicates non-comparable Kroger vs Walmart product baskets — not used for pricing actions.'
@@ -494,7 +570,7 @@ actioned as (
         CASE
 
             -- 1. Investigate: data too weak or absent to act
-            WHEN confidence_score < 50
+            WHEN confidence_score < {{ var('investigate_confidence_threshold') }}
               OR competitor_avg_price IS NULL
               OR competitor_product_count < 3
                 THEN 'Investigate'
@@ -508,19 +584,19 @@ actioned as (
             WHEN price_position = 'Underpriced'
              AND demand_signal = 'High'
              AND pricing_power_score >= {{ var('expand_margin_threshold') }}
-             AND margin_pressure_risk < 65
+             AND margin_pressure_risk < {{ var('margin_pressure_avoid_threshold') }}
                 THEN 'Raise Price'
 
             -- 4. Hold Premium: overpriced but demand + category elasticity support it
             -- Guard: skip when market is saturated AND competitor benchmark is meaningful
             WHEN price_position = 'Overpriced'
              AND demand_signal = 'High'
-             AND pricing_power_score >= 70
+             AND pricing_power_score >= {{ var('pricing_power_hold_threshold') }}
              AND elasticity_tier IN ('Low', 'Medium')
              AND competitive_intensity != 'Saturated'
              AND (
                  competitor_relevance_level IN ('Low', 'Medium')
-                 OR pricing_power_score >= 75
+                 OR pricing_power_score >= {{ var('pricing_power_strong_threshold') }}
              )
                 THEN 'Hold Premium'
 
@@ -529,8 +605,8 @@ actioned as (
             -- from generating spurious cut recommendations
             WHEN price_position = 'Overpriced'
              AND demand_signal IN ('Low', 'Medium')
-             AND adjusted_price_gap_pct > 10
-             AND markdown_safety_score >= 60
+             AND adjusted_price_gap_pct > {{ var('reduce_price_min_gap_pct') }}
+             AND markdown_safety_score >= {{ var('markdown_safety_full_threshold') }}
              AND elasticity_tier IN ('High', 'Medium')
              AND competitor_relevance_level IN ('High', 'Medium')
              AND price_gap_reliability = 'High'
@@ -538,8 +614,9 @@ actioned as (
 
             -- 6. Reduce Price (Partial): overpriced, margin caution — any elasticity
             WHEN price_position = 'Overpriced'
-             AND adjusted_price_gap_pct > 10
-             AND markdown_safety_score BETWEEN {{ var('avoid_markdown_safety_threshold') }} AND 59
+             AND adjusted_price_gap_pct > {{ var('reduce_price_min_gap_pct') }}
+             AND markdown_safety_score >= {{ var('avoid_markdown_safety_threshold') }}
+             AND markdown_safety_score <  {{ var('markdown_safety_full_threshold') }}
              AND price_gap_reliability = 'High'
                 THEN 'Reduce Price'
 
@@ -548,7 +625,7 @@ actioned as (
             -- at a Fair price position. Tighten back to High-only at 6+ months.
             WHEN price_position = 'Fair'
              AND demand_signal IN ('High', 'Medium')
-             AND competitive_threat_risk < 70
+             AND competitive_threat_risk < {{ var('competitive_threat_threshold') }}
                 THEN 'Protect Price'
 
             -- 8. Monitor: mixed signals or low elasticity premium not yet justified
@@ -558,10 +635,44 @@ actioned as (
 
         -- Markdown intensity label (used in recommended_price and reason text)
         CASE
-            WHEN markdown_safety_score >= 60 THEN 'Full'
-            WHEN markdown_safety_score >= 40 THEN 'Partial'
+            WHEN markdown_safety_score >= {{ var('markdown_safety_full_threshold') }} THEN 'Full'
+            WHEN markdown_safety_score >= {{ var('avoid_markdown_safety_threshold') }} THEN 'Partial'
             ELSE 'Not Safe'
-        END                                                     as _intensity
+        END                                                     as _intensity,
+
+        -- ── Directional pricing signal ─────────────────────────────────────────
+        -- SEPARATE from recommended_price_action — does NOT change the action cascade.
+        -- Gate 1: direction must be stable (same as previous date, non-Unknown).
+        -- Gate 2: benchmark must be reliable (Low/Unknown baskets → 'Unreliable Benchmark',
+        --         keeping the same categories the Reduce Price reliability gate already blocks).
+        CASE
+            WHEN NOT COALESCE(gap_direction_stable, FALSE)
+                THEN 'Insufficient Data'
+            WHEN price_gap_reliability IN ('Low', 'Unknown')
+                THEN 'Unreliable Benchmark'
+            WHEN price_position = 'Overpriced'
+                THEN 'Sustained Overpriced'
+            WHEN price_position = 'Underpriced'
+                THEN 'Sustained Underpriced'
+            WHEN price_position = 'Fair'
+                THEN 'Sustained Fair'
+            ELSE 'Insufficient Data'
+        END                                                     as directional_pricing_signal,
+
+        -- Directional signal confidence:
+        -- Insufficient  = direction not stable
+        -- Unreliable    = stable but benchmark is Low/Unknown reliability
+        -- Provisional   = reliable benchmark, direction stable, but < directional_established_min_dates collections
+        -- Established   = reliable benchmark, direction stable, >= directional_established_min_dates collections
+        CASE
+            WHEN NOT COALESCE(gap_direction_stable, FALSE)
+                THEN 'Insufficient'
+            WHEN price_gap_reliability IN ('Low', 'Unknown')
+                THEN 'Unreliable'
+            WHEN COALESCE(collection_count, 1) >= {{ var('directional_established_min_dates') }}
+                THEN 'Established'
+            ELSE 'Provisional'
+        END                                                     as directional_signal_confidence
 
     from derived
 
@@ -605,7 +716,9 @@ select
     competitive_intensity,
     competitor_relevance_level,
     competitor_relevance_reason,
-    competitor_last_updated,
+    kroger_collection_date,
+    competitor_price_asof_date,
+    competitor_price_staleness_days,
 
     -- Price gap
     price_gap_pct,
@@ -650,6 +763,20 @@ select
 
     -- Action
     recommended_price_action,
+
+    -- Directional signal (separate column, separate confidence — does not modify action cascade)
+    directional_pricing_signal,
+    directional_signal_confidence,
+
+    -- Temporal features
+    COALESCE(collection_count, 1)                                   as collection_count,
+    previous_price_gap_pct,
+    previous_gap_direction,
+    gap_direction_stable,
+    stable_direction_count,
+    price_gap_change_pct,
+    ROUND(price_gap_volatility, 2)                                   as price_gap_volatility,
+    COALESCE(directional_action_eligible, FALSE)                     as directional_action_eligible,
 
     -- Price reduction intensity — 'N/A' when action is not Reduce Price
     CASE

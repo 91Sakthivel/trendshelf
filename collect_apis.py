@@ -399,7 +399,7 @@ def collect_serpapi() -> bool:
             fresh_check = f"""
                 SELECT DISTINCT category
                 FROM `{PROJECT_ID}.{DATASET}.serpapi_prices_raw`
-                WHERE search_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)
+                WHERE search_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 6 DAY)
                   AND competitor_store = 'Walmart DFW'
             """
             for row in BQ.query(fresh_check).result():

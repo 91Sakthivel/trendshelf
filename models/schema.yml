@@ -417,3 +417,92 @@ models:
           - not_null
           - accepted_values:
               values: ['High', 'Medium', 'Low', 'Unknown']
+      - name: kroger_collection_date
+        description: Date of the Kroger partition used for this mart run
+        tests:
+          - not_null
+      - name: competitor_price_staleness_days
+        description: Days between Kroger and SerpAPI collection dates; 0 when both collected same day
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 60
+
+  - name: fct_store_category_weekly
+    description: >
+      Temporal fact table. Grain: kroger_collection_date × store_id × category_name.
+      All dates preserved. Temporal foundation for price trend analysis.
+    columns:
+      - name: kroger_collection_date
+        tests:
+          - not_null
+      - name: store_id
+        tests:
+          - not_null
+      - name: category_name
+        tests:
+          - not_null
+      - name: price_gap_direction
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['Overpriced', 'Underpriced', 'Unknown']
+      - name: price_position
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['Overpriced', 'Fair', 'Underpriced', 'Unknown']
+      - name: competitor_reliability
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['High', 'Medium', 'Low', 'Unknown']
+      - name: basket_mismatch_flag
+        tests:
+          - not_null
+      - name: competitor_staleness_days
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 60
+      - name: kroger_product_count
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 50
+
+  - name: int_pricing_temporal_features
+    description: >
+      Temporal window features per store × category × collection date.
+      Lag, direction stability, consecutive run count, volatility, eligibility.
+    columns:
+      - name: kroger_collection_date
+        tests:
+          - not_null
+      - name: store_id
+        tests:
+          - not_null
+      - name: category_name
+        tests:
+          - not_null
+      - name: collection_count
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 1
+              max_value: 52
+      - name: stable_direction_count
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 1
+              max_value: 52
+      - name: gap_direction_stable
+        tests:
+          - not_null
+      - name: directional_action_eligible
+        tests:
+          - not_null

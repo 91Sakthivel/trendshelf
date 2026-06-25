@@ -43,6 +43,13 @@ vars:
   expand_readiness_threshold:        80
   expand_confidence_threshold:       70
   expand_margin_threshold:           70
+  # Action routing gates — externalized for reproducibility; tunable as data accumulates
+  margin_pressure_avoid_threshold:   65    # Raise Price: block if margin pressure exceeds this
+  pricing_power_hold_threshold:      70    # Hold Premium: minimum pricing power score required
+  pricing_power_strong_threshold:    75    # Hold Premium: bypass relevance check at this power level
+  reduce_price_min_gap_pct:          10    # Reduce Price: minimum adjusted gap (%) to act
+  markdown_safety_full_threshold:    60    # Full cut if >= this; Partial cut if [avoid_markdown_safety, this)
+  competitive_threat_threshold:      70    # Protect Price: block if competitive threat exceeds this
 
   # ── Pricing band calibration (v4 — tuning constants, sensitivity-tested) ──────
   # Empirically derived thresholds once 6+ months of collection accumulates.
@@ -53,10 +60,13 @@ vars:
   reliability_low_gap_threshold:     50.0
   reliability_medium_gap_threshold:  25.0
   reliability_min_competitor_count:  10
+  max_competitor_staleness_days:     14
   # confidence smoothing (Laplace-style shrinkage toward zero)
   confidence_smoothing_k:            15.0
   # demand slope state (t-stat-like ratio threshold)
   demand_slope_rising_threshold:      0.3
+  # directional signal promotion threshold (collections needed to graduate from Provisional → Established)
+  directional_established_min_dates:  4
   threshold_config_version:         'v4_cv_calibrated'
 
 models:

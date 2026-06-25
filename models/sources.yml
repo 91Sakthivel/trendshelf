@@ -16,7 +16,11 @@ sources:
       - name: fred_ppi_raw
         description: >
           FRED series PCU42440042440012 — monthly Producer Price Index for
-          energy drink wholesalers. 24 months, most-recent first.
+          food manufacturing. 24 months, most-recent first.
+        loaded_at_field: collected_at
+        freshness:
+          warn_after:  {count: 9,  period: day}
+          error_after: {count: 16, period: day}
         columns:
           - name: observation_date
             description: First day of the observation month (DATE)
@@ -67,6 +71,10 @@ sources:
         description: >
           BLS series CUUR0000SAF11 — CPI for Food at home (all urban consumers).
           Current year and prior year. Suppressed months have NULL cpi_value.
+        loaded_at_field: collected_at
+        freshness:
+          warn_after:  {count: 9,  period: day}
+          error_after: {count: 16, period: day}
         columns:
           - name: reference_year
             description: Calendar year (INT64)
@@ -89,8 +97,13 @@ sources:
 
       - name: google_trends_raw
         description: >
-          Google Trends interest-over-time for 'energy drinks' (US, last 3 months).
-          Populated once collect_google_trends() succeeds. One row per day.
+          Google Trends interest-over-time for 10 CPG category keywords (US, last 52 weeks).
+          Pulled once as a historical baseline; not re-collected on weekly price runs.
+          Freshness set loosely (90/180 days) because this is a one-time historical pull.
+        loaded_at_field: collected_at
+        freshness:
+          warn_after:  {count: 90,  period: day}
+          error_after: {count: 180, period: day}
         columns:
           - name: trend_date
             description: Date of the trend observation (DATE)
@@ -106,9 +119,10 @@ sources:
 
       - name: serpapi_prices_raw
         description: >
-          Competitor product prices from SerpAPI Google Shopping.
-          Two queries per run: "energy drinks price walmart" and "energy drinks price kroger".
-          7-day cache prevents redundant API calls. One row per shopping result.
+          Walmart DFW competitor prices via SerpAPI (engine=walmart, store_id=2105,
+          4122 LBJ Fwy Dallas TX 75244). One search per CPG category (10 categories).
+          7-day per-category cache prevents redundant API calls. 8-of-10 categories
+          must succeed or the partition is not written. One row per organic result.
         loaded_at_field: collected_at
         freshness:
           warn_after:  {count: 9,  period: day}

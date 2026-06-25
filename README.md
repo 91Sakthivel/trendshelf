@@ -25,10 +25,10 @@ Data Sources (5 APIs)
 collect_apis.py  -->  BigQuery bronze layer (raw tables)
       |
       v
-dbt (19 models)
-  +-- Staging (5 models)      -- type-cast, rename, filter
-  +-- Intermediate (7 models) -- join, enrich, score components
-  \-- Marts (7 models)        -- final scoring, action queue, intelligence
+dbt (21 models)
+  +-- Staging (5 models)       -- type-cast, rename, filter
+  +-- Intermediate (8 models)  -- join, enrich, score components, temporal features
+  \-- Marts (8 models)         -- weekly fact, snapshot intelligence, action queue
       |
       v
 Streamlit Dashboard (4 pages)
@@ -40,11 +40,11 @@ Streamlit Dashboard (4 pages)
 
 | Source | What it provides | Cadence |
 |--------|-----------------|---------|
-| **Kroger API** | Live shelf prices across 20 DFW stores, 10 categories | Monthly |
-| **SerpAPI (Walmart)** | Competitor pricing at Walmart DFW #2105 | Monthly |
+| **Kroger API** | Live shelf prices across 20 DFW stores, 10 categories | Weekly |
+| **SerpAPI (Walmart)** | Competitor pricing at Walmart DFW #2105 | Weekly |
 | **FRED API** | Producer Price Index (food manufacturing) | Monthly |
 | **BLS API** | Consumer Price Index by category | Monthly |
-| **Google Trends** | Search demand signals by category keyword | Monthly |
+| **Google Trends** | Search demand signals by category keyword | One-time historical baseline |
 
 ---
 
@@ -71,7 +71,96 @@ Watch  35-54   -- Monitor, data improving
 Low     < 35   -- Deprioritize
 ```
 
-All thresholds are centralised in `dbt_project.yml` `vars:` block -- no hardcoding in SQL.
+### v4 Price Band Calibration
+
+`mart_pricing_intelligence` uses CV-calibrated price bands rather than fixed percentage thresholds.
+The fair-price band width is proportional to each category's coefficient of variation (how noisy
+competitor prices are), clamped to `[min_price_gap_threshold, max_price_gap_threshold]`:
+
+```
+band_pct = GREATEST(min_threshold, LEAST(max_threshold, cv_pct * cv_multiplier))
+```
+
+This prevents low-CV categories (e.g., beverages) from triggering false positives on small gaps
+and lets high-CV categories (e.g., personal care) have appropriately wider neutral zones.
+
+All tuning constants are in `dbt_project.yml` `vars:` and documented with `threshold_config_version: v4_cv_calibrated`.
+
+---
+
+## Action Cascade (8 Levels)
+
+`mart_pricing_intelligence` routes each store x category to one of 8 exclusive recommended actions,
+evaluated in priority order:
+
+| Level | Action | Trigger |
+|-------|--------|---------|
+| 1 | **Investigate** | `confidence_score < 45` |
+| 2 | **Avoid Discount** | High margin pressure or low markdown safety |
+| 3 | **Raise Price** | Underpriced with sufficient margin headroom |
+| 4 | **Hold Premium** | Strong pricing power, already priced well |
+| 5 | **Reduce Price Full** | Overpriced, gap > 10%, markdown safety >= 60 |
+| 6 | **Reduce Price Partial** | Overpriced, gap > 10%, markdown safety 40-59 |
+| 7 | **Protect Price** | Competitive threat below threshold, position is defensible |
+| 8 | **Monitor** | No other condition triggered |
+
+Reduce Price actions are blocked entirely when `price_gap_reliability` is Low or Unknown (fewer than
+10 competitors, or basket mismatch). All 8 gate thresholds are dbt vars -- no inline SQL constants.
+
+---
+
+## Temporal Foundation (Batch 3)
+
+Two models track how pricing signals evolve over weekly collection cycles:
+
+### `fct_store_category_weekly`
+
+Weekly fact table: one row per store x category x Kroger collection date. Preserves all 3 collection
+dates (600 rows total). Carries SerpAPI competitor prices forward to the nearest available date
+(within `max_competitor_staleness_days: 14`), ensuring price comparisons are always anchored to
+the Kroger collection date rather than the SerpAPI collection date.
+
+Outputs: `price_gap_pct`, CV-calibrated `price_position` (Overpriced/Fair/Underpriced),
+`competitor_reliability` (High/Medium/Low/Unknown), `basket_mismatch_flag`.
+
+### `int_pricing_temporal_features`
+
+Adds gaps-and-islands temporal logic on top of `fct_store_category_weekly`:
+
+- `direction_change_flag` -- did `price_gap_direction` flip from the previous collection?
+- `island_id` -- cumulative count of direction changes (each stable run = one island)
+- `stable_direction_count` -- how many consecutive collections in the current direction
+- `gap_direction_stable` -- TRUE when 3+ consecutive collections hold the same direction
+- `directional_action_eligible` -- requires `collection_count >= 3 AND gap_direction_stable IS TRUE`
+
+---
+
+## Directional Pricing Signal
+
+`mart_pricing_intelligence` (the snapshot mart) pulls temporal features from
+`int_pricing_temporal_features` to add two columns alongside `recommended_price_action`:
+
+**`directional_pricing_signal`** -- where the price trend is headed:
+
+| Value | Meaning |
+|-------|---------|
+| `Insufficient Data` | Fewer than 3 collection dates or direction unstable |
+| `Unreliable Benchmark` | Stable direction but Low/Unknown competitor reliability |
+| `Sustained Overpriced` | 3+ collections consistently Overpriced, reliable benchmark |
+| `Sustained Underpriced` | 3+ collections consistently Underpriced, reliable benchmark |
+| `Sustained Fair` | 3+ collections consistently Fair, reliable benchmark |
+
+**`directional_signal_confidence`** -- how confident is the directional call:
+
+| Value | Meaning |
+|-------|---------|
+| `Insufficient` | Fewer than 3 dates or unstable |
+| `Unreliable` | Low/Unknown reliability -- signal blocked |
+| `Provisional` | >= 3 dates, reliable, but fewer than 4 total collections |
+| `Established` | >= 4 collections -- auto-promoted by `directional_established_min_dates` var |
+
+The reliability gate means Reduce Price is independently blocked at two layers: the action cascade
+(via `price_gap_reliability`) and the directional signal (via `directional_pricing_signal`).
 
 ---
 
@@ -94,19 +183,21 @@ models/
     int_category_trends.sql
     int_competitive_position.sql
     int_data_quality.sql
+    int_pricing_temporal_features.sql   <- gaps-and-islands temporal direction tracking
 
   marts/
-    mart_action_queue.sql          <- primary output (store x category, 200 rows)
+    fct_store_category_weekly.sql       <- weekly fact (all dates, 600 rows)
+    mart_action_queue.sql               <- primary output (store x category, 200 rows)
     mart_confidence_layer.sql
     mart_demand_gap_analysis.sql
     mart_expansion_readiness.sql
     mart_margin_risk.sql
-    mart_pricing_intelligence.sql
+    mart_pricing_intelligence.sql       <- snapshot mart, 8-level action cascade + directional signal
     mart_risk_assessment.sql
 ```
 
-**Test coverage:** 93/94 tests passing (1 pre-existing WARN: `price_regular` nulls on weight-sold
-products -- expected behaviour).
+**Test coverage:** 132 tests passing, 1 WARN (`price_regular` nulls on weight-sold products --
+expected: Kroger API returns null price for items sold by weight, e.g. deli meat).
 
 ---
 
@@ -124,8 +215,8 @@ products -- expected behaviour).
 
 ### Page 3 -- Pricing Intelligence
 - Kroger vs. Walmart price position per category
-- Pricing action recommendations (Raise / Maintain / Reduce / Avoid Discount)
-- Markdown safety scoring
+- Pricing action recommendations (8-level cascade)
+- Markdown safety scoring and directional pricing signal
 
 ### Page 4 -- Store Rankings
 - Overall opportunity score per store
@@ -150,14 +241,17 @@ trendshelf/
     intermediate/
     marts/
     schema.yml
+    sources.yml            -- source freshness definitions
 
-  dbt_project.yml          -- vars block: all scoring thresholds
+  dbt_project.yml          -- vars block: all scoring thresholds, no SQL hardcoding
   profiles.yml             -- env_var() -- no hardcoded credentials
 
   dashboard/
     app.py                 -- Streamlit app (4 pages)
     config.py              -- Imports from root config.py
     queries.py             -- BigQuery query functions (cached ttl=3600)
+
+  notebooks/               -- ML model comparison + scoring sensitivity analysis
 
   docs/
     screenshots/
@@ -192,7 +286,7 @@ cp profiles.yml.example profiles.yml
 
 # 5. Run dbt
 dbt deps
-dbt build
+dbt build --profiles-dir .
 
 # 6. Launch dashboard
 streamlit run dashboard/app.py
@@ -247,13 +341,36 @@ vars:
   confidence_high:    75
   confidence_medium:  50
 
-  # Action logic thresholds
+  # Action cascade thresholds
+  investigate_confidence_threshold:  45
+  avoid_margin_pressure_threshold:   80
+  avoid_markdown_safety_threshold:   40
   expand_readiness_threshold:        80
   expand_confidence_threshold:       70
   expand_margin_threshold:           70
-  avoid_margin_pressure_threshold:   80
-  avoid_markdown_safety_threshold:   40
-  investigate_confidence_threshold:  45
+
+  # Action routing gates (8-level cascade)
+  margin_pressure_avoid_threshold:   65
+  pricing_power_hold_threshold:      70
+  pricing_power_strong_threshold:    75
+  reduce_price_min_gap_pct:          10
+  markdown_safety_full_threshold:    60
+  competitive_threat_threshold:      70
+
+  # v4 price band calibration
+  cv_multiplier:                     0.16
+  min_price_gap_threshold:            8.0
+  max_price_gap_threshold:           25.0
+
+  # Competitor reliability gates
+  reliability_low_gap_threshold:     50.0
+  reliability_medium_gap_threshold:  25.0
+  reliability_min_competitor_count:  10
+  max_competitor_staleness_days:     14
+
+  # Directional signal
+  directional_established_min_dates: 4
+  threshold_config_version:         'v4_cv_calibrated'
 ```
 
 ---
@@ -264,18 +381,34 @@ vars:
 - All config flows through `.env` -> `config.py` -> modules
 - `profiles.yml` uses dbt `env_var()` -- compatible with CI/CD secret injection
 - `credentials.json` and `.env` are gitignored
-- `dbt build` is fully deterministic given the same source data
+- `dbt build --profiles-dir .` is fully deterministic given the same source data
 
 ---
 
 ## Data Quality Notes
 
-- **93/94 dbt tests passing** -- 1 WARN on `price_regular` nulls for weight-sold items (expected:
+- **132 dbt tests passing** -- 1 WARN on `price_regular` nulls for weight-sold items (expected:
   Kroger API returns null price for items sold by weight, e.g. deli meat)
-- **Grain**: `mart_action_queue` is one row per store x category (20 stores x 10 categories = 200 rows)
-- **Freshness**: Kroger and Walmart data collected monthly; economic indicators (FRED/BLS) lag ~30 days
-- **Single-month caveat**: Store ranking deltas are near-zero with one collection cycle -- meaningful
-  spread appears at 3+ months
+- **Grain**: `mart_action_queue` is one row per store x category (20 stores x 10 categories = 200 rows);
+  `fct_store_category_weekly` is one row per store x category x collection date (600 rows across 3 dates)
+- **Freshness gates**: Kroger and SerpAPI freshness warns at 9 days, errors at 16 days; FRED/BLS at same cadence
+- **SerpAPI reliability gate**: `price_gap_reliability` is Low/Unknown for categories with fewer than 10
+  comparable competitor products. Reduce Price and directional signals are blocked for these categories.
+- **Single-month caveat**: Directional signals remain Provisional until 4 collection cycles complete.
+  Store ranking deltas are near-zero with one month -- meaningful spread appears at 3+ months.
+
+---
+
+## Limitations
+
+- **No ground truth**: Scoring weights are rule-based assumptions, not ML-fit to revenue or sales labels.
+  The `scoring_sensitivity_validation` notebook confirms internal consistency; it is not outcome validation.
+- **Single competitor**: Only Walmart DFW #2105. Multi-retailer comparison would require additional SerpAPI calls.
+- **Google Trends proxy**: Trends interest score is a demand proxy, not actual sales volume or POS data.
+- **Basket mismatch risk**: SerpAPI results include non-comparable products (different sizes, brands).
+  `basket_mismatch_flag` identifies the worst cases, but noise remains in Low-reliability categories.
+- **3-date temporal window**: Directional signals require 3 consecutive collections; Established confidence
+  requires 4. With weekly collection, that is 3-4 weeks of history. Longer history will improve signal quality.
 
 ---
 
@@ -332,9 +465,9 @@ Set `PYTHONIOENCODING=utf-8` in your shell profile if you need Unicode in logs.
 
 ## What I Would Do With More Time
 
-- **ML scoring layer** -- XGBoost on 6+ months of data with feature importance to validate manual weights
+- **Outcome validation** -- XGBoost trained on 6+ months of data with feature importance to validate manual weights against actual sales or margin data
 - **Multi-retailer competitor pricing** -- Target, Instacart alongside Walmart for fuller competitive picture
-- **Airflow DAGs** -- automated monthly collection pipeline
+- **Airflow DAGs** -- automated weekly collection pipeline
 - **Docker Compose** -- containerized for deployment
 - **FastAPI endpoints** -- /actions, /demand-gap, /pricing
 - **Claude API narrative** -- Monday morning written summary generated from scoring data
@@ -349,5 +482,5 @@ GitHub: [github.com/91Sakthivel](https://github.com/91Sakthivel)
 ---
 
 *Built with real API data. No synthetic datasets.*
-*Scoring: rule-based with documented assumptions.*
-*Data quality: 93/94 dbt tests passing.*
+*Scoring: rule-based with documented assumptions (outcome validation requires sales data).*
+*Data quality: 132 dbt tests passing.*

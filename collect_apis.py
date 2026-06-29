@@ -4,6 +4,7 @@ Pulls raw data from configured sources and uploads directly to BigQuery (bronze 
 """
 
 import os
+import sys
 import time
 import base64
 import logging
@@ -46,6 +47,19 @@ _creds = service_account.Credentials.from_service_account_file(
     scopes=["https://www.googleapis.com/auth/bigquery"],
 )
 BQ = bigquery.Client(project=PROJECT_ID, credentials=_creds)
+
+
+def _partition_exists_today() -> bool:
+    """Return True if kroger_prices_raw already has a partition for today's UTC date."""
+    today = RUN_TS.date().isoformat()   # RUN_TS is module-level UTC (matches loader)
+    q = (
+        f"SELECT COUNT(*) c FROM `{PROJECT_ID}.{DATASET}.kroger_prices_raw`"
+        f" WHERE DATE(collected_at) = '{today}'"
+    )
+    try:
+        return list(BQ.query(q).result())[0].c > 0
+    except Exception:
+        return False   # table missing / first ever run -> proceed
 
 
 def _upload(df: pd.DataFrame, table_name: str,
@@ -599,6 +613,16 @@ def main() -> int:
             "Default: full."
         ),
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Run all setup + checks but make NO billable API calls and NO writes. CI plumbing test.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Override skip-if-exists; collect even if today's UTC partition already exists.",
+    )
     args = parser.parse_args()
     mode = args.mode
 
@@ -609,6 +633,23 @@ def main() -> int:
     print(f"  Destination   : {PROJECT_ID}.{DATASET}")
     print(f"  Stores        : {len(KROGER_STORES)}   Categories : {len(CATEGORIES)}")
     print("=" * 64)
+
+    # Fail fast on dead BigQuery auth — costs zero API calls
+    try:
+        list(BQ.query("SELECT 1").result())
+        print("  [OK] BigQuery auth verified.")
+    except Exception as e:
+        print(f"  [FATAL] BigQuery auth failed: {e}")
+        return 1
+
+    # Idempotency: don't re-spend API calls if today's partition already exists
+    if _partition_exists_today() and not args.force:
+        print("  [SKIP] Today's UTC partition already in BigQuery. Use --force to override. Exiting cleanly.")
+        return 0
+
+    if args.dry_run:
+        print("  [DRY-RUN] Auth OK, no existing partition (or forced). Would collect now. Making NO API calls, NO writes. Exiting.")
+        return 0
 
     results = {}
 

@@ -172,6 +172,8 @@ final as (
         dt.min_interest_12m,
         dt.weeks_with_data,
 
+        (retail_price IS NOT NULL)                              as has_kroger_data,
+
         CURRENT_TIMESTAMP()                                     as load_timestamp
 
     from spine s

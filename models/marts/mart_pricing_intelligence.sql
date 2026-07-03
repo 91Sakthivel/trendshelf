@@ -569,25 +569,29 @@ actioned as (
         -- Action cascade (first match wins)
         CASE
 
-            -- 1. Investigate: data too weak or absent to act
+            -- 0. No fresh Kroger price this period -> never act on stale fallback
+            WHEN kroger_collection_date IS NULL
+                THEN 'Investigate'
+
+            -- 2. Investigate: data too weak or absent to act
             WHEN confidence_score < {{ var('investigate_confidence_threshold') }}
               OR competitor_avg_price IS NULL
               OR competitor_product_count < 3
                 THEN 'Investigate'
 
-            -- 2. Avoid Discount: margin too pressured to cut price
+            -- 3. Avoid Discount: margin too pressured to cut price
             WHEN markdown_safety_score < {{ var('avoid_markdown_safety_threshold') }}
               OR margin_pressure_risk  > {{ var('avoid_margin_pressure_threshold') }}
                 THEN 'Avoid Discount'
 
-            -- 3. Raise Price: underpriced, strong demand, pricing power confirmed
+            -- 4. Raise Price: underpriced, strong demand, pricing power confirmed
             WHEN price_position = 'Underpriced'
              AND demand_signal = 'High'
              AND pricing_power_score >= {{ var('expand_margin_threshold') }}
              AND margin_pressure_risk < {{ var('margin_pressure_avoid_threshold') }}
                 THEN 'Raise Price'
 
-            -- 4. Hold Premium: overpriced but demand + category elasticity support it
+            -- 5. Hold Premium: overpriced but demand + category elasticity support it
             -- Guard: skip when market is saturated AND competitor benchmark is meaningful
             WHEN price_position = 'Overpriced'
              AND demand_signal = 'High'
@@ -600,7 +604,7 @@ actioned as (
              )
                 THEN 'Hold Premium'
 
-            -- 5. Reduce Price (Full): overpriced, elastic category, safe margins, credible benchmark
+            -- 6. Reduce Price (Full): overpriced, elastic category, safe margins, credible benchmark
             -- price_gap_reliability guard prevents basket-mismatch gaps (frozen, dairy, etc.)
             -- from generating spurious cut recommendations
             WHEN price_position = 'Overpriced'
@@ -612,7 +616,7 @@ actioned as (
              AND price_gap_reliability = 'High'
                 THEN 'Reduce Price'
 
-            -- 6. Reduce Price (Partial): overpriced, margin caution — any elasticity
+            -- 7. Reduce Price (Partial): overpriced, margin caution — any elasticity
             WHEN price_position = 'Overpriced'
              AND adjusted_price_gap_pct > {{ var('reduce_price_min_gap_pct') }}
              AND markdown_safety_score >= {{ var('avoid_markdown_safety_threshold') }}
@@ -620,7 +624,7 @@ actioned as (
              AND price_gap_reliability = 'High'
                 THEN 'Reduce Price'
 
-            -- 7. Protect Price: fair pricing with adequate demand — hold, don't discount
+            -- 8. Protect Price: fair pricing with adequate demand — hold, don't discount
             -- Medium demand included because single-month data rarely reaches High threshold
             -- at a Fair price position. Tighten back to High-only at 6+ months.
             WHEN price_position = 'Fair'
@@ -628,7 +632,7 @@ actioned as (
              AND competitive_threat_risk < {{ var('competitive_threat_threshold') }}
                 THEN 'Protect Price'
 
-            -- 8. Monitor: mixed signals or low elasticity premium not yet justified
+            -- 9. Monitor: mixed signals or low elasticity premium not yet justified
             ELSE 'Monitor'
 
         END                                                     as recommended_price_action,

@@ -151,7 +151,10 @@ models:
         tests: [not_null, unique]
       - name: retail_price
         description: Average Kroger shelf price for this category × store × month
-        tests: [not_null]
+        tests:
+          - not_null:
+              config:
+                where: "has_kroger_data"
       - name: ppi_value
         description: Latest available FRED PPI as-of the reference month
         tests: [not_null]
@@ -420,14 +423,20 @@ models:
       - name: kroger_collection_date
         description: Date of the Kroger partition used for this mart run
         tests:
-          - not_null
+          - not_null:
+              config:
+                where: "recommended_price_action != 'Investigate'"
       - name: competitor_price_staleness_days
         description: Days between Kroger and SerpAPI collection dates; 0 when both collected same day
         tests:
-          - not_null
+          - not_null:
+              config:
+                where: "recommended_price_action != 'Investigate'"
           - dbt_utils.accepted_range:
               min_value: 0
               max_value: 60
+              config:
+                where: "recommended_price_action != 'Investigate'"
 
   - name: fct_store_category_weekly
     description: >

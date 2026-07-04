@@ -86,7 +86,7 @@ jobs:
 
           today = date.today().isoformat()
           for tbl, floor in [('kroger_prices_raw', 8000), ('serpapi_prices_raw', 200)]:
-              q = f\"SELECT COUNT(*) c FROM \\\`{project}.bronze.{tbl}\\\` WHERE DATE(collected_at) = '{today}'\"
+              q = f\"SELECT COUNT(*) c FROM {project}.bronze.{tbl} WHERE DATE(collected_at) = '{today}'\"
               n = list(bq.query(q).result())[0].c
               print(f'{tbl} {today}: {n} rows (floor {floor})')
               assert n >= floor, f'{tbl} thin/missing partition for {today}: {n} < {floor}'

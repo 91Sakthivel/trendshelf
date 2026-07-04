@@ -96,3 +96,55 @@ jobs:
       - name: Remove credential file
         if: always()           # delete the key even if an earlier step failed
         run: rm -f credentials.json
+
+  transform:
+    needs: collect
+    if: ${{ github.event_name == 'schedule' || inputs.dry_run == false }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dbt
+        run: pip install dbt-bigquery==1.9.0 dbt-core==1.9.0
+
+      - name: Write GCP service account key to file
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.GCP_SA_KEY }}" | base64 -d > credentials.json
+          python -c "import json,sys; d=json.load(open('credentials.json')); assert d.get('private_key') and d.get('client_email'), 'SA key missing fields'; print('SA key OK:', d['client_email'])"
+
+      - name: Install dbt packages
+        env:
+          GCP_CREDENTIALS_PATH: credentials.json
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+        run: |
+          set -euo pipefail
+          dbt deps
+
+      - name: dbt run
+        env:
+          GCP_CREDENTIALS_PATH: credentials.json
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+        run: |
+          set -euo pipefail
+          dbt run --profiles-dir .
+
+      - name: dbt test
+        env:
+          GCP_CREDENTIALS_PATH: credentials.json
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+        run: |
+          set -euo pipefail
+          dbt test --profiles-dir .
+
+      - name: Remove credential file
+        if: always()
+        run: rm -f credentials.json

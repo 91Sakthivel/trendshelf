@@ -404,6 +404,17 @@ vars:
 - **No ground truth**: Scoring weights are rule-based assumptions, not ML-fit to revenue or sales labels.
   The `scoring_sensitivity_validation` notebook confirms internal consistency; it is not outcome validation.
 - **Single competitor**: Only Walmart DFW #2105. Multi-retailer comparison would require additional SerpAPI calls.
+- **Walmart is a value-anchor, not a same-format peer.** Walmart is a
+  mass-merchant discounter; Kroger is a conventional supermarket. Benchmarking
+  only against Walmart systematically biases Kroger toward "Overpriced" — a
+  format difference, not necessarily mispricing. The `competitor_relevance_level`
+  column scales this per category. True DFW same-format peers (Tom Thumb, H-E-B)
+  are on the roadmap but require a paid Instacart source with a ~10–15% markup
+  to correct.
+- **Competitor unit price not used.** SerpAPI's `price_per_unit` is null for all
+  rows and `price_per_unit_str` mixes non-harmonized units ($/fl oz, $/oz,
+  $/count) within a category, so a competitor unit-price gap is invalid. Kroger
+  unit price is surfaced as a diagnostic only (see `kroger_unit_price_*`).
 - **Google Trends proxy**: Trends interest score is a demand proxy, not actual sales volume or POS data.
 - **Basket mismatch risk**: SerpAPI results include non-comparable products (different sizes, brands).
   `basket_mismatch_flag` identifies the worst cases, but noise remains in Low-reliability categories.

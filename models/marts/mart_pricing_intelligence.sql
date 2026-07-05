@@ -184,8 +184,12 @@ temporal_features as (
 
 ),
 
--- ── CTE 4: Competitor prices by category ──────────────────────────────────────
--- Walmart DFW store 2105. Median since v4 — reduces pack-size outlier sensitivity.
+-- ── CTE 4: Competitor VALUE-ANCHOR prices by category ─────────────────────────
+-- Walmart DFW store 2105 (mass-merchant EDLP). Median since v4.
+-- NOTE: Walmart is a value-anchor / price-FLOOR, NOT a same-format peer to
+-- Kroger (conventional supermarket). It systematically biases Kroger toward
+-- 'Overpriced' by format, not mispricing. competitor_relevance_level scales
+-- this per category; true same-format peers (Tom Thumb/H-E-B) are roadmap.
 
 competitor_by_category as (
 
@@ -518,7 +522,9 @@ derived as (
             ELSE 'Sparse'
         END                                                     as competitive_intensity,
 
-        -- How relevant is Walmart as a price benchmark for this category?
+        -- How relevant is Walmart as a VALUE-ANCHOR (price-floor) benchmark for this
+        -- category? Higher = Walmart EDLP is a fair floor; Lower = format/brand gap
+        -- makes the floor less comparable (Kroger premium is expected, not mispricing).
         CASE
             WHEN LOWER(category_name) IN ('household','produce','dairy','frozen foods')
                 THEN 'High'

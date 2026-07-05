@@ -242,6 +242,38 @@ kroger_by_store_category as (
 
 ),
 
+-- ── CTE 6: Kroger unit prices by store × category ─────────────────────────────
+-- Same 5× outlier gate as kroger_by_store_category; additionally requires
+-- unit_parse_ok so only successfully parsed rows contribute to the median.
+-- competitor unit comparison NOT implemented: SerpAPI price_per_unit is NULL and
+-- price_per_unit_str mixes non-harmonized units ($/fl oz, $/oz, $/count) within
+-- the same category — medians across incommensurable denominators are invalid.
+
+kroger_unit_by_store_category as (
+
+    select
+        k.store_id,
+        COALESCE(k.category, 'Unknown')                         as category_name,
+        ROUND(APPROX_QUANTILES(
+            IF(k.unit_parse_ok AND k.price_regular <= 5 * cm.cat_median,
+               k.kroger_unit_price_raw, NULL),
+            100
+        )[OFFSET(50)], 4)                                       as kroger_unit_price_median,
+        ROUND(
+            100 * SAFE_DIVIDE(COUNTIF(k.unit_parse_ok), COUNT(*)),
+        2)                                                       as kroger_unit_price_coverage_pct,
+        APPROX_TOP_COUNT(
+            IF(k.unit_parse_ok, k.size_unit, NULL), 1
+        )[SAFE_OFFSET(0)].value                                  as kroger_unit_price_unit
+    from {{ ref('int_kroger_unit_price') }} k
+    cross join latest_dates ld
+    join category_medians cm
+      on COALESCE(k.category, 'Unknown') = cm.category_name
+    where DATE(k.collected_at) = ld.kroger_date
+    group by 1, 2
+
+),
+
 -- ── Join all sources at signal grain ──────────────────────────────────────────
 
 base as (
@@ -264,6 +296,11 @@ base as (
         COALESCE(k.kroger_product_count, 0)                     as kroger_product_count,
         COALESCE(k.kroger_outliers_excluded, 0)                 as kroger_outliers_excluded,
         COALESCE(k.kroger_private_label_share, 0)               as kroger_private_label_share,
+
+        -- Kroger unit price (NULL when category parse coverage is zero)
+        ku.kroger_unit_price_median,
+        ku.kroger_unit_price_coverage_pct,
+        ku.kroger_unit_price_unit,
 
         -- Category-level Walmart price (NULL when SerpAPI has no data for this category)
         comp.competitor_avg_price,
@@ -307,6 +344,9 @@ base as (
     left join kroger_by_store_category k
            on d.store_id       = k.store_id
           and d.category_name  = k.category_name
+    left join kroger_unit_by_store_category ku
+           on d.store_id       = ku.store_id
+          and d.category_name  = ku.category_name
     left join competitor_by_category comp
            on d.category_name  = comp.category
     left join category_dispersion cd
@@ -340,6 +380,9 @@ scored as (
         kroger_product_count,
         kroger_outliers_excluded,
         kroger_private_label_share,
+        kroger_unit_price_median,
+        kroger_unit_price_coverage_pct,
+        kroger_unit_price_unit,
         competitor_avg_price,
         competitor_product_count,
         kroger_collection_date,
@@ -715,6 +758,9 @@ select
     kroger_product_count,
     kroger_outliers_excluded,
     kroger_private_label_share,
+    ROUND(kroger_unit_price_median, 4)                          as kroger_unit_price_median,
+    kroger_unit_price_coverage_pct,
+    kroger_unit_price_unit,
     ROUND(competitor_avg_price, 2)                              as competitor_avg_price,
     competitor_product_count,
     competitive_intensity,

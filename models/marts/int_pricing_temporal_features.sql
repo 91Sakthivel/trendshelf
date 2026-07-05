@@ -29,7 +29,8 @@ with base as (
         store_id,
         category_name,
         price_gap_pct,
-        price_gap_direction
+        price_gap_direction,
+        price_position
     from {{ ref('fct_store_category_weekly') }}
 
 ),
@@ -44,6 +45,7 @@ lagged as (
         category_name,
         price_gap_pct,
         price_gap_direction,
+        price_position,
 
         LAG(price_gap_pct) OVER (
             PARTITION BY store_id, category_name
@@ -54,6 +56,11 @@ lagged as (
             PARTITION BY store_id, category_name
             ORDER BY kroger_collection_date
         )                                                           as previous_gap_direction,
+
+        LAG(price_position) OVER (
+            PARTITION BY store_id, category_name
+            ORDER BY kroger_collection_date
+        )                                                           as previous_price_position,
 
         COUNT(*) OVER (
             PARTITION BY store_id, category_name
@@ -146,6 +153,12 @@ select
 
     -- (7) Price gap volatility across all collected dates for this store × category
     price_gap_volatility,
+
+    -- (9) CV-calibrated price position label at this collection date
+    price_position,
+
+    -- (10) Price position label from the previous collection date (for Gap Flip detection)
+    previous_price_position,
 
     -- (8) Eligible for directional action: need ≥3 collections AND stable direction
     -- With 1 date: no lag. With 2 dates: one comparison available but not yet confirmed.

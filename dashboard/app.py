@@ -726,6 +726,49 @@ elif page == "Pricing Intelligence":
         st.plotly_chart(fig_int, use_container_width=True)
         st.divider()
 
+    # ── Promo Diagnostics (expander) ──────────────────────────────────────────
+
+    _promo_cols_present = all(
+        c in pi.columns for c in ["kroger_promo_share", "kroger_effective_price", "effective_gap_pct"]
+    )
+
+    with st.expander("Promo Diagnostics", expanded=False):
+        if not _promo_cols_present:
+            st.info("Promo columns not yet available — rebuild mart_pricing_intelligence to activate.")
+        else:
+            st.caption(
+                "Diagnostic view only. kroger_effective_price uses COALESCE(price_promo, price_regular) "
+                "so it reflects the shelf price a shopper actually pays. "
+                "This does NOT change scoring, price_position, or action recommendations."
+            )
+
+            promo_toggle = st.toggle("Show promo-adjusted gap (effective price)", key="promo_toggle")
+
+            # ── KPI cards ────────────────────────────────────────────────────
+            pm1, pm2, pm3 = st.columns(3)
+            with pm1:
+                st.metric("Avg promo share", f"{pi['kroger_promo_share'].mean()*100:.0f}%")
+            with pm2:
+                _deep = pi.groupby('category_name')['kroger_promo_share'].mean()
+                st.metric("Categories on deep promo (>30%)", int((_deep > 0.30).sum()))
+            with pm3:
+                st.metric("Avg effective gap", f"{pi['effective_gap_pct'].mean():.1f}%")
+
+            # ── Bar chart: promo share by category ───────────────────────────
+            _ps = (pi.groupby('category_name', as_index=False)['kroger_promo_share'].mean()
+                     .sort_values('kroger_promo_share', ascending=False))
+            _fig = px.bar(_ps, x='category_name', y='kroger_promo_share',
+                          color_discrete_sequence=["#3B82F6"])
+            _fig.update_layout(yaxis_tickformat=".0%")
+            st.plotly_chart(_fig, use_container_width=True)
+
+            # ── Toggle: list gap vs promo-adjusted gap ────────────────────────
+            if promo_toggle:
+                _cmp = (pi[["category_name", "store_id", "price_gap_pct", "effective_gap_pct"]]
+                          .dropna(subset=["effective_gap_pct"])
+                          .sort_values("effective_gap_pct", ascending=False))
+                st.dataframe(_cmp, use_container_width=True, hide_index=True)
+
     # ── ROW 3 — Filters ───────────────────────────────────────────────────────
 
     st.subheader("Pricing Detail")

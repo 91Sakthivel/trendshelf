@@ -110,6 +110,20 @@ def get_pricing_intelligence() -> pd.DataFrame:
 
 
 @st.cache_data(ttl=3600)
+def get_weekly_events() -> pd.DataFrame:
+    """mart_weekly_events: week-over-week pricing events (Gap Flip / Big Move / New Sustained)."""
+    return _run(f"""
+        SELECT
+            event_type, store_id, category_name, event_detail,
+            price_gap_pct, price_gap_change_pct,
+            price_position, previous_price_position,
+            stable_direction_count, competitor_reliability, event_rank
+        FROM `{P}.{D}.mart_weekly_events`
+        ORDER BY event_type, event_rank
+    """)
+
+
+@st.cache_data(ttl=3600)
 def get_demand_scores() -> pd.DataFrame:
     """
     mart_demand_gap_scores joined with dim_location, mart_expansion_readiness,

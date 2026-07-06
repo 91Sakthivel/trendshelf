@@ -24,6 +24,7 @@ from dashboard.queries import (
     get_top_pricing_actions, get_dfw_avg_scores, get_store_health_rankings,
     get_store_list, get_store_scores, get_data_freshness,
     get_intelligence_summary, get_category_opportunity_scores,
+    get_weekly_events,
 )
 
 # ── Page config ───────────────────────────────────────────────────────────────
@@ -66,7 +67,7 @@ with st.sidebar:
 
     page = st.radio(
         "Navigate",
-        ["Command Center", "Demand Intelligence", "Pricing Intelligence", "Store Deep Dive"],
+        ["Command Center", "Demand Intelligence", "Pricing Intelligence", "Weekly Events", "Store Deep Dive"],
         label_visibility="collapsed",
     )
 
@@ -845,7 +846,44 @@ elif page == "Pricing Intelligence":
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# PAGE 4 — Store Deep Dive
+# PAGE 4 — Weekly Events
+# ═══════════════════════════════════════════════════════════════════════════════
+
+elif page == "Weekly Events":
+    st.title("Weekly Events")
+    st.caption("Week-over-week pricing movements — Gap Flips, Big Moves, New Sustained streaks")
+
+    with st.spinner("Loading data from BigQuery..."):
+        try:
+            df = get_weekly_events()
+        except Exception as e:
+            st.error(f"BigQuery error: {e}")
+            st.stop()
+
+    if df.empty:
+        st.warning("No weekly events found.")
+        st.stop()
+
+    rel = st.multiselect(
+        "Reliability",
+        ["High", "Medium", "Low", "Unknown"],
+        default=["High", "Medium"],
+    )
+    df = df[df["competitor_reliability"].isin(rel)]
+
+    for event_type in ["Gap Flip", "Big Move", "New Sustained"]:
+        st.subheader(event_type)
+        subset = df[(df["event_type"] == event_type) & (df["event_rank"] <= 5)]
+        if subset.empty:
+            st.caption("No events this week.")
+        else:
+            st.dataframe(subset, use_container_width=True, hide_index=True)
+
+    _page_footer()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAGE 5 — Store Deep Dive
 # ═══════════════════════════════════════════════════════════════════════════════
 
 elif page == "Store Deep Dive":

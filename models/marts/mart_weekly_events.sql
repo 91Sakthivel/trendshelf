@@ -78,6 +78,7 @@ gap_flip as (
       and price_position          NOT IN ('Unknown')
       and previous_price_position IS NOT NULL
       and previous_price_position <> 'Unknown'
+      and ABS(price_gap_change_pct) <= {{ var('reliability_low_gap_threshold') }}
 
 ),
 
@@ -111,6 +112,7 @@ big_move as (
         )                                                           as event_rank
     from base
     where ABS(price_gap_change_pct) >= 10
+      and ABS(price_gap_change_pct) <= {{ var('reliability_low_gap_threshold') }}
 
 ),
 

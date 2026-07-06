@@ -235,6 +235,21 @@ kroger_by_store_category as (
             )
             / NULLIF(COUNTIF(k.price_regular <= 5 * cm.cat_median), 0),
         3)                                                      as kroger_private_label_share,
+
+        -- Promo signal: DIAGNOSTIC only — not wired into price_gap_pct, price_position,
+        -- or the action cascade. Regular-price scoring unchanged. Future phase.
+        ROUND(APPROX_QUANTILES(
+            IF(k.price_regular <= 5 * cm.cat_median,
+               COALESCE(k.price_promo, k.price_regular), NULL),
+            100
+        )[OFFSET(50)], 4)                                       as kroger_effective_price,
+        ROUND(SAFE_DIVIDE(
+            COUNTIF(k.price_promo IS NOT NULL
+                    AND k.price_promo < k.price_regular
+                    AND k.price_regular <= 5 * cm.cat_median),
+            NULLIF(COUNTIF(k.price_regular <= 5 * cm.cat_median), 0)
+        ), 3)                                                   as kroger_promo_share,
+
         MAX(DATE(k.collected_at))                               as kroger_collection_date
     from {{ ref('stg_kroger_prices') }} k
     cross join latest_dates ld
@@ -300,6 +315,8 @@ base as (
         COALESCE(k.kroger_product_count, 0)                     as kroger_product_count,
         COALESCE(k.kroger_outliers_excluded, 0)                 as kroger_outliers_excluded,
         COALESCE(k.kroger_private_label_share, 0)               as kroger_private_label_share,
+        k.kroger_effective_price,
+        COALESCE(k.kroger_promo_share, 0)                       as kroger_promo_share,
 
         -- Kroger unit price (NULL when category parse coverage is zero)
         ku.kroger_unit_price_median,
@@ -384,6 +401,8 @@ scored as (
         kroger_product_count,
         kroger_outliers_excluded,
         kroger_private_label_share,
+        kroger_effective_price,
+        kroger_promo_share,
         kroger_unit_price_median,
         kroger_unit_price_coverage_pct,
         kroger_unit_price_unit,
@@ -437,6 +456,19 @@ scored as (
                 ) * 100,
             2)
         END                                                     as price_gap_pct,
+
+        -- effective_gap_pct: DIAGNOSTIC only — promo-adjusted gap vs Walmart.
+        -- Regular-price scoring (price_gap_pct, price_position, cascade) unchanged.
+        -- Wiring effective price into the cascade is a future phase.
+        CASE
+            WHEN kroger_effective_price IS NULL OR competitor_avg_price IS NULL THEN NULL
+            ELSE ROUND(
+                SAFE_DIVIDE(
+                    kroger_effective_price - competitor_avg_price,
+                    NULLIF(competitor_avg_price, 0)
+                ) * 100,
+            2)
+        END                                                     as effective_gap_pct,
 
         -- Competitor data confidence label (step tiers — unchanged from v3)
         CASE
@@ -767,6 +799,8 @@ select
     ROUND(kroger_unit_price_median, 4)                          as kroger_unit_price_median,
     kroger_unit_price_coverage_pct,
     kroger_unit_price_unit,
+    ROUND(kroger_effective_price,   4)                          as kroger_effective_price,
+    kroger_promo_share,
     ROUND(competitor_avg_price, 2)                              as competitor_avg_price,
     competitor_product_count,
     competitive_intensity,
@@ -779,6 +813,7 @@ select
     -- Price gap
     price_gap_pct,
     adjusted_price_gap_pct,
+    effective_gap_pct,
     price_position,
     price_position_threshold,
     category_cv_pct,

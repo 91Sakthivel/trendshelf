@@ -147,9 +147,54 @@ if page == "Command Center":
             st.error(f"BigQuery error: {e}")
             st.stop()
 
+    try:
+        ev = get_weekly_events()
+    except Exception:
+        ev = pd.DataFrame()
+
     if aq.empty:
         st.warning("No data available for this view.")
         st.stop()
+
+    # ── Top Events This Week ──────────────────────────────────────────────────
+
+    st.subheader("⚡ Top Events This Week")
+    st.caption("Highest-priority pricing movements — ranked by reliability × magnitude.")
+
+    if ev.empty:
+        st.info("No events yet — needs a second collection to compare week-over-week.")
+    else:
+        _ev_cols_ok = all(
+            c in ev.columns
+            for c in ["competitor_reliability", "event_rank", "store_id", "category_name",
+                       "event_type", "event_detail"]
+        )
+        if not _ev_cols_ok:
+            st.info("Event columns not yet available — rebuild mart_weekly_events to activate.")
+        else:
+            _ev = ev[ev["competitor_reliability"].isin(["High", "Medium"])].copy()
+            _ev = _ev[_ev["event_rank"] <= 5]
+
+            # Attach plain-English 'why' from pricing intelligence via store × category join
+            _pi_why_cols = ["store_id", "category_name", "price_action_reason",
+                            "recommended_price_action"]
+            if not pi.empty and all(c in pi.columns for c in _pi_why_cols):
+                _why = (
+                    pi[_pi_why_cols]
+                    .drop_duplicates(["store_id", "category_name"])
+                )
+                _ev = _ev.merge(_why, on=["store_id", "category_name"], how="left")
+
+            _show_cols = [c for c in [
+                "event_type", "category_name", "store_id", "event_detail",
+                "recommended_price_action", "price_action_reason", "competitor_reliability",
+            ] if c in _ev.columns]
+            _show = _ev[_show_cols].sort_values(
+                [c for c in ["event_type", "competitor_reliability"] if c in _ev.columns]
+            )
+            st.dataframe(_show, use_container_width=True, hide_index=True)
+
+    st.divider()
 
     # ── ROW 1 — KPI metrics (6 columns) ──────────────────────────────────────
 

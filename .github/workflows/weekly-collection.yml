@@ -127,7 +127,7 @@ jobs:
           GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
         run: |
           set -euo pipefail
-          dbt deps --profiles-dir .
+          dbt deps --profiles-dir "$GITHUB_WORKSPACE"
 
       - name: dbt run
         env:
@@ -135,7 +135,7 @@ jobs:
           GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
         run: |
           set -euo pipefail
-          dbt run --profiles-dir .
+          dbt run --profiles-dir "$GITHUB_WORKSPACE"
 
       - name: dbt test
         env:
@@ -143,7 +143,7 @@ jobs:
           GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
         run: |
           set -euo pipefail
-          dbt test --profiles-dir .
+          dbt test --profiles-dir "$GITHUB_WORKSPACE"
 
       - name: Remove credential file
         if: always()

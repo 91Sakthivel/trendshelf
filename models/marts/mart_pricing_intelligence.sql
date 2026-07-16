@@ -54,8 +54,14 @@ with category_elasticity as (
 
 latest_dates as (
 
-    select MAX(DATE(collected_at)) as kroger_date
-    from {{ ref('stg_kroger_prices') }}
+    -- Anchor to the latest Kroger date that ALSO has competitor (SerpAPI) data,
+    -- so incomplete/Kroger-only partitions (e.g. an off-cadence manual run) are
+    -- never scored. Protects against partial partitions generally, not just one date.
+    select MAX(DATE(k.collected_at)) as kroger_date
+    from {{ ref('stg_kroger_prices') }} k
+    where DATE(k.collected_at) in (
+        select DATE(collected_at) from {{ ref('stg_serpapi_prices') }}
+    )
 
 ),
 

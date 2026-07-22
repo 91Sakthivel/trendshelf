@@ -121,6 +121,22 @@ jobs:
           echo "${{ secrets.GCP_SA_KEY }}" | base64 -d > credentials.json
           python -c "import json,sys; d=json.load(open('credentials.json')); assert d.get('private_key') and d.get('client_email'), 'SA key missing fields'; print('SA key OK:', d['client_email'])"
 
+      - name: Write dbt profiles.yml
+        run: |
+          cat > "$GITHUB_WORKSPACE/profiles.yml" <<'EOF'
+          trendshelf:
+            target: dev
+            outputs:
+              dev:
+                type: bigquery
+                method: service-account
+                project: "{{ env_var('GCP_PROJECT_ID') }}"
+                dataset: "{{ env_var('GCP_DATASET', 'bronze') }}"
+                keyfile: "{{ env_var('GCP_CREDENTIALS_PATH', 'credentials.json') }}"
+                threads: 4
+                timeout_seconds: 300
+          EOF
+
       - name: Install dbt packages
         env:
           GCP_CREDENTIALS_PATH: credentials.json

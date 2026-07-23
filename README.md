@@ -97,14 +97,14 @@ evaluated in priority order:
 |-------|--------|---------|
 | 1 | **Investigate** | `confidence_score < 45` |
 | 2 | **Avoid Discount** | High margin pressure or low markdown safety |
-| 3 | **Raise Price** | Underpriced with sufficient margin headroom |
+| 3 | **Review Price Increase** | Underpriced with sufficient margin headroom |
 | 4 | **Hold Premium** | Strong pricing power, already priced well |
-| 5 | **Reduce Price Full** | Overpriced, gap > 10%, markdown safety >= 60 |
-| 6 | **Reduce Price Partial** | Overpriced, gap > 10%, markdown safety 40-59 |
+| 5 | **Review Price Reduction (Full)** | Overpriced, gap > 10%, markdown safety >= 60 |
+| 6 | **Review Price Reduction (Partial)** | Overpriced, gap > 10%, markdown safety 40-59 |
 | 7 | **Protect Price** | Competitive threat below threshold, position is defensible |
 | 8 | **Monitor** | No other condition triggered |
 
-Reduce Price actions are blocked entirely when `price_gap_reliability` is Low or Unknown (fewer than
+Review Price Reduction actions are blocked entirely when `price_gap_reliability` is Low or Unknown (fewer than
 10 competitors, or basket mismatch). All 8 gate thresholds are dbt vars -- no inline SQL constants.
 
 ---
@@ -157,9 +157,9 @@ Adds gaps-and-islands temporal logic on top of `fct_store_category_weekly`:
 | `Insufficient` | Fewer than 3 dates or unstable |
 | `Unreliable` | Low/Unknown reliability -- signal blocked |
 | `Provisional` | >= 3 dates, reliable, but fewer than 4 total collections |
-| `Established` | >= 4 collections -- auto-promoted by `directional_established_min_dates` var |
+| `Persistent` | >= 4 collections -- auto-promoted by `directional_established_min_dates` var |
 
-The reliability gate means Reduce Price is independently blocked at two layers: the action cascade
+The reliability gate means Review Price Reduction is independently blocked at two layers: the action cascade
 (via `price_gap_reliability`) and the directional signal (via `directional_pricing_signal`).
 
 ---
@@ -393,7 +393,7 @@ vars:
   `fct_store_category_weekly` is one row per store x category x collection date (600 rows across 3 dates)
 - **Freshness gates**: Kroger and SerpAPI freshness warns at 9 days, errors at 16 days; FRED/BLS at same cadence
 - **SerpAPI reliability gate**: `price_gap_reliability` is Low/Unknown for categories with fewer than 10
-  comparable competitor products. Reduce Price and directional signals are blocked for these categories.
+  comparable competitor products. Review Price Reduction and directional signals are blocked for these categories.
 - **Single-month caveat**: Directional signals remain Provisional until 4 collection cycles complete.
   Store ranking deltas are near-zero with one month -- meaningful spread appears at 3+ months.
 
@@ -418,7 +418,7 @@ vars:
 - **Google Trends proxy**: Trends interest score is a demand proxy, not actual sales volume or POS data.
 - **Basket mismatch risk**: SerpAPI results include non-comparable products (different sizes, brands).
   `basket_mismatch_flag` identifies the worst cases, but noise remains in Low-reliability categories.
-- **3-date temporal window**: Directional signals require 3 consecutive collections; Established confidence
+- **3-date temporal window**: Directional signals require 3 consecutive collections; Persistent confidence
   requires 4. With weekly collection, that is 3-4 weeks of history. Longer history will improve signal quality.
 
 ---

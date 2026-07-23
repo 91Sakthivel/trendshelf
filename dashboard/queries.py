@@ -111,7 +111,7 @@ def get_pricing_intelligence() -> pd.DataFrame:
 
 @st.cache_data(ttl=3600)
 def get_weekly_events() -> pd.DataFrame:
-    """mart_weekly_events: week-over-week pricing events (Gap Flip / Big Move / New Sustained)."""
+    """mart_weekly_events: week-over-week pricing events (Gap Flip / Big Move / 3-Collection Streak)."""
     return _run(f"""
         SELECT
             event_type, store_id, category_name, event_detail,

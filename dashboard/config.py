@@ -12,9 +12,9 @@ from config import PROJECT_ID, DATASET, CREDENTIALS_PATH, WALMART_DFW_STORE_ID, 
 COLORS = {
     "Investigate":    "#EF4444",
     "Avoid Discount": "#F97316",
-    "Reduce Price":   "#F59E0B",
-    "Hold Premium":   "#8B5CF6",
-    "Raise Price":    "#10B981",
+    "Review Price Reduction": "#F59E0B",
+    "Hold Premium":           "#8B5CF6",
+    "Review Price Increase":  "#10B981",
     "Protect Price":  "#3B82F6",
     "Monitor":        "#6B7280",
 }

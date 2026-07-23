@@ -245,7 +245,7 @@ if page == "Command Center":
     st.subheader("Action Queue")
     st.info(
         "Actions below are operational shelf decisions from mart_action_queue. "
-        "Pricing-specific actions (Hold Premium, Reduce Price, Raise Price) "
+        "Pricing-specific actions (Hold Premium, Review Price Reduction, Review Price Increase) "
         "are on Page 3 — Pricing Intelligence."
     )
     show_monitor = st.checkbox("Show Monitor / Investigate rows", value=False)
@@ -831,7 +831,7 @@ elif page == "Pricing Intelligence":
     with f4:
         rel_opts   = sorted(pi["price_gap_reliability"].dropna().unique().tolist())
         sel_rel    = st.multiselect("Reliability", rel_opts, default=rel_opts)
-    st.caption("Reduce Price recommendations only appear under High reliability.")
+    st.caption("Review Price Reduction recommendations only appear under High reliability.")
 
     filtered = pi[
         pi["elasticity_tier"].isin(sel_elast) &
@@ -939,7 +939,7 @@ elif page == "Pricing Intelligence":
 
 elif page == "Weekly Events":
     st.title("Weekly Events")
-    st.caption("Week-over-week pricing movements — Gap Flips, Big Moves, New Sustained streaks")
+    st.caption("Week-over-week pricing movements — Gap Flips, Big Moves, 3-Collection Streaks")
 
     with st.spinner("Loading data from BigQuery..."):
         try:
@@ -959,7 +959,7 @@ elif page == "Weekly Events":
     )
     df = df[df["competitor_reliability"].isin(rel)]
 
-    for event_type in ["Gap Flip", "Big Move", "New Sustained"]:
+    for event_type in ["Gap Flip", "Big Move", "3-Collection Streak"]:
         st.subheader(event_type)
         subset = df[(df["event_type"] == event_type) & (df["event_rank"] <= 5)]
         if subset.empty:

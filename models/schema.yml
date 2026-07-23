@@ -357,8 +357,13 @@ models:
         tests:
           - not_null
           - accepted_values:
-              values: ['Investigate', 'Avoid Discount', 'Raise Price',
-                       'Hold Premium', 'Reduce Price', 'Protect Price', 'Monitor']
+              values: ['Investigate', 'Avoid Discount', 'Review Price Increase',
+                       'Hold Premium', 'Review Price Reduction', 'Protect Price', 'Monitor']
+      - name: directional_signal_confidence
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['Insufficient', 'Unreliable', 'Persistent', 'Provisional']
       - name: price_reduction_intensity
         tests:
           - not_null
@@ -415,7 +420,7 @@ models:
               min_value: 0
               max_value: 1
       - name: price_gap_reliability
-        description: High / Medium / Low / Unknown — basket comparability gate; Low bars Reduce Price actions
+        description: High / Medium / Low / Unknown — basket comparability gate; Low bars Review Price Reduction actions
         tests:
           - not_null
           - accepted_values:
@@ -513,5 +518,22 @@ models:
         tests:
           - not_null
       - name: directional_action_eligible
+        tests:
+          - not_null
+
+  - name: mart_weekly_events
+    description: >
+      Week-over-week pricing event feed. Grain: event_type × store_id × category_name,
+      anchored to MAX(kroger_collection_date). View — no materialization.
+    columns:
+      - name: event_type
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['Gap Flip', 'Big Move', '3-Collection Streak']
+      - name: store_id
+        tests:
+          - not_null
+      - name: category_name
         tests:
           - not_null

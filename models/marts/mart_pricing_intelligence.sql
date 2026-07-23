@@ -676,7 +676,7 @@ actioned as (
              AND demand_signal = 'High'
              AND pricing_power_score >= {{ var('expand_margin_threshold') }}
              AND margin_pressure_risk < {{ var('margin_pressure_avoid_threshold') }}
-                THEN 'Raise Price'
+                THEN 'Review Price Increase'
 
             -- 5. Hold Premium: overpriced but demand + category elasticity support it
             -- Guard: skip when market is saturated AND competitor benchmark is meaningful
@@ -701,7 +701,7 @@ actioned as (
              AND elasticity_tier IN ('High', 'Medium')
              AND competitor_relevance_level IN ('High', 'Medium')
              AND price_gap_reliability = 'High'
-                THEN 'Reduce Price'
+                THEN 'Review Price Reduction'
 
             -- 7. Reduce Price (Partial): overpriced, margin caution — any elasticity
             WHEN price_position = 'Overpriced'
@@ -709,7 +709,7 @@ actioned as (
              AND markdown_safety_score >= {{ var('avoid_markdown_safety_threshold') }}
              AND markdown_safety_score <  {{ var('markdown_safety_full_threshold') }}
              AND price_gap_reliability = 'High'
-                THEN 'Reduce Price'
+                THEN 'Review Price Reduction'
 
             -- 8. Protect Price: fair pricing with adequate demand — hold, don't discount
             -- Medium demand included because single-month data rarely reaches High threshold
@@ -754,14 +754,14 @@ actioned as (
         -- Insufficient  = direction not stable
         -- Unreliable    = stable but benchmark is Low/Unknown reliability
         -- Provisional   = reliable benchmark, direction stable, but < directional_established_min_dates collections
-        -- Established   = reliable benchmark, direction stable, >= directional_established_min_dates collections
+        -- Persistent    = reliable benchmark, direction stable, >= directional_established_min_dates collections
         CASE
             WHEN NOT COALESCE(gap_direction_stable, FALSE)
                 THEN 'Insufficient'
             WHEN price_gap_reliability IN ('Low', 'Unknown')
                 THEN 'Unreliable'
             WHEN COALESCE(collection_count, 1) >= {{ var('directional_established_min_dates') }}
-                THEN 'Established'
+                THEN 'Persistent'
             ELSE 'Provisional'
         END                                                     as directional_signal_confidence
 
@@ -875,16 +875,16 @@ select
     ROUND(price_gap_volatility, 2)                                   as price_gap_volatility,
     COALESCE(directional_action_eligible, FALSE)                     as directional_action_eligible,
 
-    -- Price reduction intensity — 'N/A' when action is not Reduce Price
+    -- Price reduction intensity — 'N/A' when action is not Review Price Reduction
     CASE
-        WHEN recommended_price_action = 'Reduce Price' THEN _intensity
+        WHEN recommended_price_action = 'Review Price Reduction' THEN _intensity
         ELSE 'N/A'
     END                                                         as price_reduction_intensity,
 
     -- Recommended shelf price
     ROUND(
         CASE recommended_price_action
-            WHEN 'Reduce Price' THEN
+            WHEN 'Review Price Reduction' THEN
                 CASE _intensity
                     WHEN 'Full'    THEN GREATEST(
                                            COALESCE(competitor_avg_price, kroger_avg_price) * 1.03,
@@ -893,7 +893,7 @@ select
                     WHEN 'Partial' THEN COALESCE(kroger_avg_price, 0) * 0.97
                     ELSE                COALESCE(kroger_avg_price, 0)
                 END
-            WHEN 'Raise Price' THEN
+            WHEN 'Review Price Increase' THEN
                 LEAST(
                     COALESCE(competitor_avg_price, kroger_avg_price) * 1.05,
                     COALESCE(kroger_avg_price, 0) * 1.04
@@ -914,12 +914,12 @@ select
             'Markdown safety: ', CAST(ROUND(markdown_safety_score, 0) AS STRING), '/100. ',
             'Protect current price.'
         )
-        WHEN 'Raise Price' THEN CONCAT(
+        WHEN 'Review Price Increase' THEN CONCAT(
             'Kroger is ',
             CAST(CAST(ROUND(ABS(COALESCE(price_gap_pct, 0)), 0) AS INT64) AS STRING),
             '% below Walmart. Demand is strong (',
             CAST(ROUND(overall_demand_gap_score, 0) AS STRING),
-            '/100) and pricing power supports an increase.'
+            '/100) and pricing power supports a price increase.'
         )
         WHEN 'Hold Premium' THEN CONCAT(
             'Kroger is ', CAST(ROUND(COALESCE(price_gap_pct, 0), 0) AS STRING),
@@ -928,12 +928,12 @@ select
             '/100) and category has premium tolerance (',
             CAST(premium_tolerance_score AS STRING), '/100). Hold price.'
         )
-        WHEN 'Reduce Price' THEN CONCAT(
+        WHEN 'Review Price Reduction' THEN CONCAT(
             'Kroger is ', CAST(ROUND(COALESCE(price_gap_pct, 0), 0) AS STRING),
             '% above Walmart. ',
             CASE _intensity
                 WHEN 'Full'    THEN 'Demand and margin support a full price reduction.'
-                WHEN 'Partial' THEN 'Margin caution — reduce partially only.'
+                WHEN 'Partial' THEN 'Margin caution — partial reduction recommended.'
                 ELSE                'Review margin before cutting.'
             END
         )

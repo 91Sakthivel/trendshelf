@@ -1,7 +1,7 @@
 {{
     config(
         materialized = 'view',
-        description  = 'Week-over-week pricing event feed. Grain: event_type × store_id × category_name, anchored to MAX(kroger_collection_date). Three event types: Gap Flip (position band crossed), Big Move (|Δgap| ≥ 10pp), New Sustained (streak first hits 3 weeks). All qualifying rows returned; UI filters by event_rank and competitor_reliability.'
+        description  = 'Week-over-week pricing event feed. Grain: event_type × store_id × category_name, anchored to MAX(kroger_collection_date). Three event types: Gap Flip (position band crossed), Big Move (|Δgap| ≥ 10pp), 3-Collection Streak (direction held for exactly 3 consecutive weeks). All qualifying rows returned; UI filters by event_rank and competitor_reliability.'
     )
 }}
 
@@ -13,7 +13,7 @@
 
   event_rank ordering:
     Gap Flip, Big Move → ABS(price_gap_change_pct) DESC (largest move ranks first)
-    New Sustained      → ABS(price_gap_pct)        DESC (widest gap ranks first)
+    3-Collection Streak → ABS(price_gap_pct)        DESC (widest gap ranks first)
 */
 
 -- ── Anchor: latest Kroger collection date ─────────────────────────────────────
@@ -116,7 +116,7 @@ big_move as (
 
 ),
 
--- ── Event type 3: New Sustained ───────────────────────────────────────────────
+-- ── Event type 3: 3-Collection Streak ────────────────────────────────────────
 -- Fires exactly once when a direction streak first reaches 3 consecutive collections.
 -- stable_direction_count = 3 does not re-fire at 4, 5, ... — promotion happens once.
 
@@ -126,7 +126,7 @@ new_sustained as (
         kroger_collection_date,
         store_id,
         category_name,
-        'New Sustained'                                             as event_type,
+        '3-Collection Streak'                                       as event_type,
         CONCAT(
             price_position,
             ' streak reached 3 consecutive weeks'

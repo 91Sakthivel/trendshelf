@@ -50,7 +50,7 @@ price as (
 
     select
         signal_id,
-        margin_pressure_risk,
+        margin_pressure_proxy_score,
         cost_shock_score,
         promo_risk_score,
         overall_margin_risk_score,
@@ -153,7 +153,7 @@ full_signals as (
         r.overall_risk_score,
         r.risk_level,
 
-        p.margin_pressure_risk,
+        p.margin_pressure_proxy_score,
         p.cost_shock_score,
         p.promo_risk_score,
         p.price_position_score,
@@ -215,7 +215,7 @@ action_rows as (
               OR data_completeness_score  < 60
                 THEN 'INVESTIGATE'
             -- 1. AVOID: demand decaying or margins critically squeezed
-            WHEN demand_decay_risk > 70 OR margin_pressure_risk > {{ var('avoid_margin_pressure_threshold') }}
+            WHEN demand_decay_risk > 70 OR margin_pressure_proxy_score > {{ var('avoid_margin_pressure_threshold') }}
                 THEN 'AVOID'
             -- 2. EXPAND: high readiness backed by confident data
             WHEN expansion_readiness_score > {{ var('expand_readiness_threshold') }} AND overall_confidence_score > {{ var('expand_confidence_threshold') }}
@@ -312,8 +312,8 @@ select
         WHEN 'AVOID' THEN CONCAT(
             'Do not expand — demand decay risk (',
             CAST(ROUND(demand_decay_risk, 0) AS STRING),
-            '/100) or margin pressure (',
-            CAST(ROUND(margin_pressure_risk, 0) AS STRING),
+            '/100) or cost-pressure indicator (',
+            CAST(ROUND(margin_pressure_proxy_score, 0) AS STRING),
             '/100) is critical; stabilise current shelf position first'
         )
         WHEN 'EXPAND' THEN CONCAT(
@@ -396,10 +396,10 @@ select
     -- Plain-English justification for the action recommendation
     CASE action_type
         WHEN 'AVOID' THEN CONCAT(
-            'Demand decaying or margins critically squeezed (decay risk ',
+            'Demand decaying or cost-pressure indicator elevated (decay risk ',
             CAST(ROUND(demand_decay_risk, 0) AS STRING),
-            ', margin pressure ',
-            CAST(ROUND(margin_pressure_risk, 0) AS STRING),
+            ', cost-pressure indicator ',
+            CAST(ROUND(margin_pressure_proxy_score, 0) AS STRING),
             '/100). Not the right time to act — stabilise current position first.'
         )
         WHEN 'EXPAND' THEN CONCAT(
@@ -460,7 +460,7 @@ select
     -- Score that triggered the action
     ROUND(
         CASE action_type
-            WHEN 'AVOID'       THEN GREATEST(demand_decay_risk, margin_pressure_risk)
+            WHEN 'AVOID'       THEN GREATEST(demand_decay_risk, margin_pressure_proxy_score)
             WHEN 'EXPAND'      THEN expansion_readiness_score
             WHEN 'DEFEND'      THEN competitive_threat_risk
             WHEN 'PITCH'       THEN expansion_readiness_score

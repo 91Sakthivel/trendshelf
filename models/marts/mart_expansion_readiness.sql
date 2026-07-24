@@ -43,7 +43,7 @@ price as (
         signal_id,
         price_position_score,
         cost_shock_score,
-        margin_pressure_risk,
+        margin_pressure_proxy_score,
         promo_risk_score,
         overall_margin_risk_score
     from {{ ref('mart_price_margin_scores') }}
@@ -95,7 +95,7 @@ base as (
         r.risk_level,
 
         p.price_position_score,
-        p.margin_pressure_risk,
+        p.margin_pressure_proxy_score,
         p.promo_risk_score,
         p.overall_margin_risk_score,
 
@@ -140,7 +140,7 @@ scored as (
             -- Reward: good price position (brand can earn margin here)
             price_position_score * 0.25 +
             -- Penalise: margin risk reduces attractiveness
-            (100 - margin_pressure_risk) * 0.20 +
+            (100 - margin_pressure_proxy_score) * 0.20 +
             -- Penalise: promo dependency reduces long-term fit
             (100 - promo_risk_score) * 0.15
         ))                                           as store_market_fit_score,
@@ -155,7 +155,7 @@ scored as (
         search_to_shelf_gap,
         intent_quality_score,
         price_position_score,
-        margin_pressure_risk,
+        margin_pressure_proxy_score,
         promo_risk_score,
         missed_demand_risk,
         demand_decay_risk,
@@ -239,8 +239,8 @@ select
         WHEN overall_confidence_score < 40
             THEN 'COLLECT MORE DATA: Low confidence in signals — refresh all API sources and re-score'
 
-        WHEN margin_pressure_risk >= 70
-            THEN 'FIX MARGINS: Margin squeeze detected — negotiate COGS or adjust shelf price before expansion'
+        WHEN margin_pressure_proxy_score >= 70
+            THEN 'FIX MARGINS: Shelf price has not kept pace with rising category input costs (inferred from industry price indices, not observed supplier costs) — review cost position before expanding.'
 
         WHEN expansion_readiness_score >= 40
             THEN 'BUILD CASE: Moderate readiness — gather 2 more months of data to strengthen expansion story'
@@ -256,7 +256,7 @@ select
     category_momentum_score,
     search_to_shelf_gap,
     price_position_score,
-    margin_pressure_risk,
+    margin_pressure_proxy_score,
     promo_risk_score,
     missed_demand_risk,
     demand_decay_risk,

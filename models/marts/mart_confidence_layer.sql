@@ -45,7 +45,7 @@ price as (
     select
         signal_id,
         price_position_score,
-        margin_pressure_risk,
+        margin_pressure_proxy_score,
         overall_margin_risk_score,
         cost_passthrough_rate
     from {{ ref('mart_price_margin_scores') }}
@@ -128,7 +128,7 @@ base as (
         r.competitor_avg_price,
 
         p.price_position_score,
-        p.margin_pressure_risk,
+        p.margin_pressure_proxy_score,
         p.overall_margin_risk_score,
         p.cost_passthrough_rate,
 

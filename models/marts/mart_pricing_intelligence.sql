@@ -147,7 +147,7 @@ price as (
 
     select
         signal_id,
-        margin_pressure_risk,
+        margin_pressure_proxy_score,
         promo_risk_score
     from {{ ref('mart_price_margin_scores') }}
 
@@ -344,7 +344,7 @@ base as (
         d.intent_quality_score,
         r.competitive_threat_risk,
         r.demand_decay_risk,
-        p.margin_pressure_risk,
+        p.margin_pressure_proxy_score,
         p.promo_risk_score,
         c.overall_confidence_score,
 
@@ -432,7 +432,7 @@ scored as (
         COALESCE(intent_quality_score,     50)                  as intent_quality_score,
         COALESCE(competitive_threat_risk,  50)                  as competitive_threat_risk,
         COALESCE(demand_decay_risk,        35)                  as demand_decay_risk,
-        COALESCE(margin_pressure_risk,     30)                  as margin_pressure_risk,
+        COALESCE(margin_pressure_proxy_score,     30)            as margin_pressure_proxy_score,
         COALESCE(promo_risk_score,         30)                  as promo_risk_score,
         COALESCE(overall_confidence_score, 50)                  as confidence_score,
 
@@ -494,7 +494,7 @@ scored as (
         -- Inverse of markdown risk. High = safe to cut price; Low = cutting is dangerous.
         LEAST(100, GREATEST(0,
             100 - (
-                COALESCE(margin_pressure_risk, 30) * 0.45
+                COALESCE(margin_pressure_proxy_score, 30) * 0.45
                 + COALESCE(promo_risk_score,   30) * 0.30
                 + COALESCE(demand_decay_risk,  35) * 0.25
             )
@@ -668,14 +668,14 @@ actioned as (
 
             -- 3. Avoid Discount: margin too pressured to cut price
             WHEN markdown_safety_score < {{ var('avoid_markdown_safety_threshold') }}
-              OR margin_pressure_risk  > {{ var('avoid_margin_pressure_threshold') }}
+              OR margin_pressure_proxy_score  > {{ var('avoid_margin_pressure_threshold') }}
                 THEN 'Avoid Discount'
 
             -- 4. Raise Price: underpriced, strong demand, pricing power confirmed
             WHEN price_position = 'Underpriced'
              AND demand_signal = 'High'
              AND premium_support_proxy_score >= {{ var('expand_margin_threshold') }}
-             AND margin_pressure_risk < {{ var('margin_pressure_avoid_threshold') }}
+             AND margin_pressure_proxy_score < {{ var('margin_pressure_avoid_threshold') }}
                 THEN 'Review Price Increase'
 
             -- 5. Hold Premium: overpriced but demand + category elasticity support it
@@ -844,7 +844,7 @@ select
     ROUND(category_momentum_score,  2)                          as category_momentum_score,
 
     -- Margin
-    ROUND(margin_pressure_risk,     2)                          as margin_pressure_risk,
+    ROUND(margin_pressure_proxy_score,     2)                   as margin_pressure_proxy_score,
     ROUND(promo_risk_score,         2)                          as promo_risk_score,
     ROUND(demand_decay_risk,        2)                          as demand_decay_risk,
     ROUND(markdown_safety_score,    2)                          as markdown_safety_score,

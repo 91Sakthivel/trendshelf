@@ -11,7 +11,7 @@
   Scores (0–100):
     price_position_score   — where shelf price sits vs. cost benchmarks (higher = premium positioned)
     cost_shock_score       — how much input costs have moved recently (higher = more cost pressure)
-    margin_pressure_risk   — combined retail + wholesale cost squeeze (higher = more risk)
+    margin_pressure_proxy_score — retail-price-vs-PPI divergence proxy (higher = more inferred pressure)
     promo_risk_score       — dependency on promotions to move product (higher = more risky)
     cost_passthrough_rate  — how well retail price tracks input costs (not capped; can exceed 100)
 */
@@ -201,7 +201,7 @@ scored as (
                         5.0
                     ))
             END
-        ))                                          as margin_pressure_risk,
+        ))                                          as margin_pressure_proxy_score,
 
         -- ── 4. Promo Risk Score ───────────────────────────────────────────────
         -- High fraction of SKUs on promo = demand is promo-dependent; risky.
@@ -267,13 +267,13 @@ select
 
     ROUND(price_position_score,  2)                 as price_position_score,
     ROUND(cost_shock_score,      2)                 as cost_shock_score,
-    ROUND(margin_pressure_risk,  2)                 as margin_pressure_risk,
+    ROUND(margin_pressure_proxy_score,  2)          as margin_pressure_proxy_score,
     ROUND(promo_risk_score,      2)                 as promo_risk_score,
     cost_passthrough_rate,
 
     -- Composite margin health (higher = more risk to margins)
     ROUND(LEAST(100, GREATEST(0,
-        margin_pressure_risk * 0.40 +
+        margin_pressure_proxy_score * 0.40 +
         cost_shock_score     * 0.25 +
         promo_risk_score     * 0.20 +
         (100 - price_position_score) * 0.15

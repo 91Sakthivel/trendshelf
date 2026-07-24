@@ -213,7 +213,7 @@ models:
       - name: signal_id
         description: Surrogate key matching fact_market_signals
         tests: [not_null, unique]
-      - name: margin_pressure_risk
+      - name: margin_pressure_proxy_score
         description: Margin squeeze risk score 0-100
         tests:
           - not_null

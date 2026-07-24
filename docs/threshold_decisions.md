@@ -117,6 +117,32 @@ Reason: the score measures whether available signals SUPPORT holding a premium; 
 |---|---|---|
 | `pricing_power_score` | `premium_support_proxy_score` | `mart_pricing_intelligence.sql`, `mart_action_queue.sql`, `schema.yml`, `dashboard/queries.py`, `dashboard/app.py`, `docs/threshold_decisions.md`, `docs/scoring_methodology.md` |
 
+### Commit 4 — column rename (`margin_pressure_risk`) + user-facing wording
+
+Reason: the score infers margin pressure by comparing Kroger's own shelf-price trend to the FRED PPI index. No cost, margin, or COGS figure is read anywhere. "proxy" marks it as inferred, matching `premium_support_proxy_score`. No formula, weight, threshold, or cascade condition changed — only the column name and three user-facing strings.
+
+| Old name | New name | Files |
+|---|---|---|
+| `margin_pressure_risk` | `margin_pressure_proxy_score` | `mart_price_margin_scores.sql`, `mart_action_queue.sql`, `mart_confidence_layer.sql`, `mart_expansion_readiness.sql`, `mart_pricing_intelligence.sql`, `schema.yml`, `docs/scoring_methodology.md` |
+
+**What `margin_pressure_proxy_score` uses and does not use:**
+- Uses: Kroger's own retail shelf-price trend (`AVG(price_regular)` from `stg_kroger_prices`, month over month) and the FRED Producer Price Index trend (`stg_fred_ppi`, an external industry-wide macro series).
+- Does not use: supplier cost, COGS, or any observed margin figure. Nothing in this model reads an actual cost or margin number for the brand or product — the score is a rule-based classification of whether retail price kept pace with a macro cost proxy, not a measurement of margin.
+
+**User-facing wording changed (zero numeric impact, same CASE conditions):**
+- `mart_expansion_readiness.sql` — the `'FIX MARGINS'` recommendation string no longer says "negotiate COGS" (implies observed supplier cost data that doesn't exist). Now: "Shelf price has not kept pace with rising category input costs (inferred from industry price indices, not observed supplier costs) — review cost position before expanding."
+- `mart_action_queue.sql:316` (action_description) — "margin pressure (N/100)" → "cost-pressure indicator (N/100)".
+- `mart_action_queue.sql:402` (action_justification) — "margins critically squeezed" → "cost-pressure indicator elevated"; "margin pressure N" → "cost-pressure indicator N".
+
+**Left unchanged, deliberately:**
+- `dbt_project.yml` var names `avoid_margin_pressure_threshold` and `margin_pressure_avoid_threshold`, and their mirrors in `README.md` — these are threshold var identifiers, a separate naming surface from the column itself.
+- `docs/session_notes_batch3_hardening.md` and notebook files — dated historical records, not live reference docs.
+- `mart_action_queue.sql:455` — the `reason_code` literal `'PROMO_RISK_MARGIN_PRESSURE'`. This is a machine token (a `reason_code`, not display text) with no user-facing consumer; left as-is.
+
+**Noted duplication:** `mart_pricing_intelligence.sql:435` re-applies `COALESCE(margin_pressure_proxy_score, 30)` on top of the producer's own NULL handling in `mart_price_margin_scores.sql:189` (which already resolves NULL inputs to 30 before the value ever leaves that model). The column can never actually be NULL by the time it reaches `mart_pricing_intelligence`, so this second COALESCE is inert — not a bug, just redundant defensive code. Not changed as part of this rename (formula/logic untouched by instruction).
+
+**Open finding — STEP 3 measurement (2026-07-23):** The "healthy" branch (`GREATEST(0, 30 − Δretail_price / 5.0)`, where `Δretail_price = retail_price − retail_price_1m_ago`) currently produces scores confined to **29.52–30.00** across all 71 rows that reach it (55 distinct rounded values, but all within a 0.48-point band out of the score's 0–100 range), even though the underlying `Δretail_price` ranges from $0.01 to $2.40 — a 200× spread in input collapsed to <0.5% of output range by the `/5.0` divisor. Branch membership overall: 329 rows `BRANCH_55_COMPRESSION`, 71 rows `BRANCH_HEALTHY`, 0 rows `BRANCH_80_SQUEEZE`, 0 rows `BRANCH_40_COST_RISING`, 0 rows `NULL_FALLBACK_30` (determined by reconstructing the producer's own `retail_price_1m_ago` / `ppi_1m_ago` LAG logic outside the model and reapplying the identical CASE predicates; verified exact — 0 mismatches against the live `margin_pressure_risk` output across all 400 rows before this rename's rebuild). Not fixed — flagged for a future pass once more months of Kroger data reduce the single-month-lag skew (329 of 400 rows currently have no prior month at all and fall trivially into branch 55).
+
 ---
 
 ## 6. Open item — CASE branch count vs accepted_values list

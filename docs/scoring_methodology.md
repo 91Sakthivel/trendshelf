@@ -97,7 +97,7 @@ expansion_readiness_score =
 
 Where:
 - `region_opportunity_score = overall_demand_gap_score × 0.50 + category_momentum_score × 0.30 + intent_quality_score × 0.20`
-- `store_market_fit_score = search_to_shelf_gap × 0.40 + price_position_score × 0.25 + (100 − margin_pressure_risk) × 0.20 + (100 − promo_risk_score) × 0.15`
+- `store_market_fit_score = search_to_shelf_gap × 0.40 + price_position_score × 0.25 + (100 − margin_pressure_proxy_score) × 0.20 + (100 − promo_risk_score) × 0.15`
 
 **Why risk inverted (1 − risk):** High risk is a gate on expansion. The formula penalises readiness when risk is elevated — it would be counterproductive to expand into a store where shelf risk is already severe.
 
@@ -110,7 +110,7 @@ Actions fire in priority order — the first matching condition wins:
 | Priority | Action | Condition |
 |----------|--------|-----------|
 | 0 | INVESTIGATE (gate) | `retail_price IS NULL OR confidence < 45 OR completeness < 60` |
-| 1 | AVOID | `demand_decay_risk > 70 OR margin_pressure_risk > 80` |
+| 1 | AVOID | `demand_decay_risk > 70 OR margin_pressure_proxy_score > 80` |
 | 2 | EXPAND | `expansion_readiness > 80 AND confidence > 70` |
 | 3 | DEFEND | `competitive_threat_risk > 70` |
 | 4 | PITCH | `readiness BETWEEN 65 AND 80 AND demand_gap > 60` |
@@ -251,7 +251,7 @@ Machine-readable tags for downstream filtering and dashboard tooltips.
 
 ## Limitations
 
-- **Only 1 month of Kroger retail data currently.** LAG-based scores (margin_pressure_risk, demand_decay_risk, trend velocity) all default to conservative mid-range values because there is no prior month to compare against. Score standard deviations are low; differentiation will improve as more months accumulate.
+- **Only 1 month of Kroger retail data currently.** LAG-based scores (margin_pressure_proxy_score, demand_decay_risk, trend velocity) all default to conservative mid-range values because there is no prior month to compare against. Score standard deviations are low; differentiation will improve as more months accumulate.
 - **Google Trends is category-level, not SKU-level.** "beverages" search interest is attributed equally to all stores in the same month. Store-level demand variation is captured only through the shelf coverage (product count) dimension.
 - **Competitor pricing from SerpAPI is a Walmart/Google Shopping proxy.** It is not a direct SKU-to-SKU Kroger vs. competitor match. Competitive threat risk is more reliable when both competitor prices and Kroger prices are available in the same category.
 - **No actual sales outcome data.** All scores are leading indicators derived from publicly available signals. They have not been validated against historical sell-through data.

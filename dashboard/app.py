@@ -89,10 +89,10 @@ with st.sidebar:
     st.markdown("**Scoring**")
     try:
         _aq = get_action_queue()
-        _score_ver = _aq["score_version"].iloc[0] if not _aq.empty else "v4_statistical_calibration"
+        _score_ver = _aq["score_version"].iloc[0] if not _aq.empty else "v4_robust_heuristic_calibration"
     except Exception:
         _aq = pd.DataFrame()
-        _score_ver = "v4_statistical_calibration"
+        _score_ver = "v4_robust_heuristic_calibration"
     st.markdown(f"`{_score_ver}`")
     st.markdown("- Method: `v4_cv_calibrated`")
     st.markdown("- Kroger stores: 20")

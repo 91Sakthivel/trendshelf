@@ -1,7 +1,7 @@
 {{
     config(
         materialized = 'table',
-        description  = 'Full pricing intelligence engine: Kroger vs Walmart DFW per store × category, with elasticity-adjusted action cascade and plain-English reasons. Score version: v4_statistical_calibration.'
+        description  = 'Full pricing intelligence engine: Kroger vs Walmart DFW per store × category, with elasticity-adjusted action cascade and plain-English reasons. Score version: v4_robust_heuristic_calibration.'
     )
 }}
 
@@ -18,7 +18,7 @@
     5. Markdown safety, pricing power, demand signal, price gap confidence.
     6. Action cascade (8 levels, first match wins).
 
-  Score version: v4_statistical_calibration
+  Score version: v4_robust_heuristic_calibration
     vs v3_category_prices:
       - price_gap_pct: NULL propagates honestly (no COALESCE-to-0 false gaps)
       - kroger/competitor prices: median replaces mean (outlier-robust)
@@ -986,7 +986,7 @@ select
     'Decision rule'                                             as pricing_signal_type,
 
     -- Metadata
-    'v4_statistical_calibration'                                as score_version,
+    'v4_robust_heuristic_calibration'                           as score_version,
     CURRENT_TIMESTAMP()                                         as load_timestamp
 
 from tiered

@@ -329,7 +329,7 @@ models:
     description: >
       Full pricing intelligence engine. Grain: reference_month × category × store.
       Kroger vs Walmart DFW per store × category with elasticity-adjusted action cascade.
-      Score version: v4_statistical_calibration.
+      Score version: v4_robust_heuristic_calibration.
     columns:
       - name: price_gap_confidence
         tests:

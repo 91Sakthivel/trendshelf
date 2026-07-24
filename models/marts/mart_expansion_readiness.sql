@@ -276,7 +276,7 @@ select
     -- expansion_readiness_score is model-derived: computed from weighted inputs (demand,
     -- risk, margin, confidence), not directly measured from a single source.
     'Model-derived'                                  as expansion_signal_type,
-    'v4_statistical_calibration'                     as score_version,
+    'v4_robust_heuristic_calibration'                as score_version,
     CONCAT(
         'Expansion score based on ',
         CAST(source_count AS STRING),

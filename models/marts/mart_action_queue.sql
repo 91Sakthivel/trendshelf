@@ -560,7 +560,7 @@ select
         ELSE 'STABLE'
     END                                                          as risk_reason_code,
 
-    'v4_statistical_calibration'                              as score_version,
+    'v4_robust_heuristic_calibration'                         as score_version,
     load_timestamp
 
 from action_rows

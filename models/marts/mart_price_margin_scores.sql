@@ -241,7 +241,7 @@ scored as (
         avg_search_interest,
 
         signal_type,
-        'v4_statistical_calibration'                as score_version,
+        'v4_robust_heuristic_calibration'           as score_version,
         CASE
             WHEN retail_price IS NULL
                 THEN 'No Kroger price data for this month; price scores estimated at mid-range defaults'

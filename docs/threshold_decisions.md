@@ -143,6 +143,16 @@ Reason: the score infers margin pressure by comparing Kroger's own shelf-price t
 
 **Open finding — STEP 3 measurement (2026-07-23):** The "healthy" branch (`GREATEST(0, 30 − Δretail_price / 5.0)`, where `Δretail_price = retail_price − retail_price_1m_ago`) currently produces scores confined to **29.52–30.00** across all 71 rows that reach it (55 distinct rounded values, but all within a 0.48-point band out of the score's 0–100 range), even though the underlying `Δretail_price` ranges from $0.01 to $2.40 — a 200× spread in input collapsed to <0.5% of output range by the `/5.0` divisor. Branch membership overall: 329 rows `BRANCH_55_COMPRESSION`, 71 rows `BRANCH_HEALTHY`, 0 rows `BRANCH_80_SQUEEZE`, 0 rows `BRANCH_40_COST_RISING`, 0 rows `NULL_FALLBACK_30` (determined by reconstructing the producer's own `retail_price_1m_ago` / `ppi_1m_ago` LAG logic outside the model and reapplying the identical CASE predicates; verified exact — 0 mismatches against the live `margin_pressure_risk` output across all 400 rows before this rename's rebuild). Not fixed — flagged for a future pass once more months of Kroger data reduce the single-month-lag skew (329 of 400 rows currently have no prior month at all and fall trivially into branch 55).
 
+### Commit 5 — string literal rename (`score_version`)
+
+Reason: the scoring logic is a calibrated heuristic cascade (rule-based CASE branches with analyst-set thresholds and weights), not a fitted statistical model. `'v4_statistical_calibration'` overstated what the engine does. The `v4_` prefix is kept — this pass changed terminology only, not the scoring logic, formulas, weights, thresholds, or cascade conditions in any of the 7 marts.
+
+| Old value | New value | Files |
+|---|---|---|
+| `'v4_statistical_calibration'` | `'v4_robust_heuristic_calibration'` | `mart_pricing_intelligence.sql` (score_version alias + config description + header comment), `mart_action_queue.sql`, `mart_confidence_layer.sql`, `mart_demand_gap_scores.sql`, `mart_expansion_readiness.sql`, `mart_price_margin_scores.sql`, `mart_shelfrisk_scores.sql`, `models/schema.yml`, `dashboard/app.py` (fallback string, 2 sites) |
+
+**Left unchanged, deliberately:** `docs/session_notes_v4_pricing.md:16` — a dated historical record of the v4 rollout, not a live reference doc.
+
 ---
 
 ## 6. Open item — CASE branch count vs accepted_values list

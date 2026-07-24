@@ -307,7 +307,7 @@ final as (
         cost_passthrough_rate,
         competitor_avg_price,
         signal_type,
-        'v4_statistical_calibration'                as score_version,
+        'v4_robust_heuristic_calibration'           as score_version,
 
         kroger_hours_ago,
         trends_hours_ago,

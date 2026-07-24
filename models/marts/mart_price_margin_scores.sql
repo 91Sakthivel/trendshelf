@@ -50,15 +50,16 @@ ppi_lags_stg as (
 
     select
         DATE_TRUNC(observation_date, MONTH)         as reference_month,
+        series_id,
         ppi_value,
         LAG(ppi_value, 1) OVER (
-            ORDER BY DATE_TRUNC(observation_date, MONTH)
+            PARTITION BY series_id ORDER BY DATE_TRUNC(observation_date, MONTH)
         )                                           as ppi_1m_ago,
         LAG(ppi_value, 3) OVER (
-            ORDER BY DATE_TRUNC(observation_date, MONTH)
+            PARTITION BY series_id ORDER BY DATE_TRUNC(observation_date, MONTH)
         )                                           as ppi_3m_ago,
         LAG(ppi_value, 6) OVER (
-            ORDER BY DATE_TRUNC(observation_date, MONTH)
+            PARTITION BY series_id ORDER BY DATE_TRUNC(observation_date, MONTH)
         )                                           as ppi_6m_ago
     from {{ ref('stg_fred_ppi') }}
 

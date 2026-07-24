@@ -242,7 +242,7 @@ def get_dfw_avg_scores() -> dict:
         SELECT
             ROUND(AVG(aq.overall_demand_gap_score),   1) AS avg_demand_gap,
             ROUND(AVG(er.expansion_readiness_score),  1) AS avg_expansion,
-            ROUND(AVG(pi.pricing_power_score),        1) AS avg_pricing_power,
+            ROUND(AVG(pi.premium_support_proxy_score),        1) AS avg_premium_support,
             ROUND(AVG(aq.overall_confidence_score),   1) AS avg_confidence,
             ROUND(100 - AVG(aq.overall_risk_score),   1) AS avg_risk_inv,
             ROUND(AVG(pi.markdown_safety_score),      1) AS avg_markdown_safety
@@ -252,7 +252,7 @@ def get_dfw_avg_scores() -> dict:
         LEFT JOIN `{P}.{D}.mart_pricing_intelligence` pi
                ON aq.store_id = pi.store_id AND aq.category_name = pi.category_name
     """)
-    fallback = dict(avg_demand_gap=50.0, avg_expansion=50.0, avg_pricing_power=50.0,
+    fallback = dict(avg_demand_gap=50.0, avg_expansion=50.0, avg_premium_support=50.0,
                     avg_confidence=50.0, avg_risk_inv=50.0, avg_markdown_safety=50.0)
     if df.empty:
         return fallback
@@ -314,7 +314,7 @@ def get_store_scores(store_id: str) -> pd.DataFrame:
             ROUND(er.expansion_readiness_score,   1) AS expansion_readiness_score,
             ROUND(er.region_opportunity_score,    1) AS region_opportunity_score,
             ROUND(er.store_market_fit_score,      1) AS store_market_fit_score,
-            ROUND(pi.pricing_power_score,         1) AS pricing_power_score,
+            ROUND(pi.premium_support_proxy_score,         1) AS premium_support_proxy_score,
             ROUND(pi.markdown_safety_score,       1) AS markdown_safety_score,
             ROUND(pi.kroger_avg_price,            2) AS kroger_avg_price,
             ROUND(pi.competitor_avg_price,        2) AS competitor_avg_price,

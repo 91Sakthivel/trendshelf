@@ -103,7 +103,7 @@ pricing_intel as (
         store_id,
         category_name,
         competitive_intensity,
-        pricing_power_score,
+        premium_support_proxy_score,
         markdown_safety_score
     from {{ ref('mart_pricing_intelligence') }}
 
@@ -174,7 +174,7 @@ full_signals as (
         v.seasonality_flag,
         mac.macro_risk_flag,
         pi.competitive_intensity,
-        pi.pricing_power_score,
+        pi.premium_support_proxy_score,
         pi.markdown_safety_score,
 
         -- Pre-computed opportunity composite for tier derivation
@@ -183,7 +183,7 @@ full_signals as (
             + e.expansion_readiness_score              * {{ var('opp_weight_expansion') }}
             + (100 - r.overall_risk_score)             * {{ var('opp_weight_pricing') }}
             + c.overall_confidence_score               * {{ var('opp_weight_confidence') }}
-            + COALESCE(pi.pricing_power_score, 50)     * {{ var('opp_weight_risk') }}
+            + COALESCE(pi.premium_support_proxy_score, 50)     * {{ var('opp_weight_risk') }}
             + (100 - p.overall_margin_risk_score)      * {{ var('opp_weight_margin') }}
         )), 1)                                                   as overall_opportunity_score,
 
@@ -497,7 +497,7 @@ select
     seasonality_flag,
     macro_risk_flag,
     competitive_intensity,
-    pricing_power_score,
+    premium_support_proxy_score,
     markdown_safety_score,
 
     overall_opportunity_score,

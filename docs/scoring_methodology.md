@@ -183,7 +183,7 @@ overall_opportunity_score =
   + expansion_readiness_score    × 0.20
   + (100 − overall_risk_score)   × 0.20
   + overall_confidence_score     × 0.15
-  + pricing_power_score          × 0.10
+  + premium_support_proxy_score  × 0.10
   + (100 − overall_margin_risk)  × 0.10
 ```
 

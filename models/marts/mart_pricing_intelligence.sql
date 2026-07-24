@@ -541,8 +541,8 @@ derived as (
         END                                                     as demand_signal,
 
         -- ── Pricing power ──────────────────────────────────────────────────────
-        -- Incorporates the elasticity-derived premium_tolerance_score so that
-        -- low-elasticity categories (coffee tea, personal care) earn higher
+        -- Incorporates the elasticity-derived category_premium_tolerance_prior_score
+        -- so that low-elasticity categories (coffee tea, personal care) earn higher
         -- pricing power without needing stronger demand signals.
         LEAST(100, GREATEST(0,
             overall_demand_gap_score  * 0.30
@@ -550,7 +550,7 @@ derived as (
             + category_premium_tolerance_prior_score * 0.20
             + markdown_safety_score   * 0.15
             + confidence_score        * 0.15
-        ))                                                      as pricing_power_score,
+        ))                                                      as premium_support_proxy_score,
 
         -- Competitive intensity: market density of competitor SKUs in this category
         CASE
@@ -674,7 +674,7 @@ actioned as (
             -- 4. Raise Price: underpriced, strong demand, pricing power confirmed
             WHEN price_position = 'Underpriced'
              AND demand_signal = 'High'
-             AND pricing_power_score >= {{ var('expand_margin_threshold') }}
+             AND premium_support_proxy_score >= {{ var('expand_margin_threshold') }}
              AND margin_pressure_risk < {{ var('margin_pressure_avoid_threshold') }}
                 THEN 'Review Price Increase'
 
@@ -682,12 +682,12 @@ actioned as (
             -- Guard: skip when market is saturated AND competitor benchmark is meaningful
             WHEN price_position = 'Overpriced'
              AND demand_signal = 'High'
-             AND pricing_power_score >= {{ var('pricing_power_hold_threshold') }}
+             AND premium_support_proxy_score >= {{ var('pricing_power_hold_threshold') }}
              AND category_sensitivity_tier IN ('Low', 'Medium')
              AND competitive_intensity != 'Saturated'
              AND (
                  competitor_relevance_level IN ('Low', 'Medium')
-                 OR pricing_power_score >= {{ var('pricing_power_strong_threshold') }}
+                 OR premium_support_proxy_score >= {{ var('pricing_power_strong_threshold') }}
              )
                 THEN 'Hold Premium'
 
@@ -855,7 +855,7 @@ select
     'Industry prior'                                            as elasticity_source,
 
     -- Composite scores
-    ROUND(pricing_power_score,      2)                          as pricing_power_score,
+    ROUND(premium_support_proxy_score,      2)                  as premium_support_proxy_score,
     pricing_situation,
 
     -- Action
@@ -990,4 +990,4 @@ select
     CURRENT_TIMESTAMP()                                         as load_timestamp
 
 from tiered
-order by scoring_date desc, pricing_power_score desc
+order by scoring_date desc, premium_support_proxy_score desc

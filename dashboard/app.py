@@ -1026,7 +1026,7 @@ elif page == "Store Deep Dive":
     radar_def = {
         "demand_gap_score":          ("Demand Gap",          "avg_demand_gap"),
         "expansion_readiness_score": ("Expansion Readiness", "avg_expansion"),
-        "pricing_power_score":       ("Pricing Power",       "avg_pricing_power"),
+        "premium_support_proxy_score": ("Premium Support",   "avg_premium_support"),
         "confidence_score":          ("Confidence",          "avg_confidence"),
         "risk_score":                ("Shelf Risk (inv.)",   "avg_risk_inv"),
         "markdown_safety_score":     ("Margin Safety",       "avg_markdown_safety"),

@@ -13,7 +13,7 @@ The table below is verbatim from the `category_elasticity` CTE in `models/marts/
 The priors are used in two places in `mart_pricing_intelligence.sql`:
 
 - `category_sensitivity_tier` gates the Hold Premium and Review Price Reduction cascade branches (values `'Low'`, `'Medium'`, `'High'` control elasticity direction).
-- `category_premium_tolerance_prior_score` is one of five inputs to `pricing_power_score` with weight 0.20. It shifts pricing power upward for categories where consumers historically tolerate premium pricing relative to mass-market retailers.
+- `category_premium_tolerance_prior_score` is one of five inputs to `premium_support_proxy_score` with weight 0.20. It shifts pricing power upward for categories where consumers historically tolerate premium pricing relative to mass-market retailers.
 
 | Category | Sensitivity tier | Premium tolerance prior score |
 |---|---|---|
@@ -81,7 +81,7 @@ These values are externalized because they appear in multiple models or are expe
 
 ## 4. Scoring formula weights — deliberately NOT externalized
 
-The per-formula weights (e.g. markdown_safety_score's 0.45/0.30/0.25, pricing_power_score's 0.30/0.20/0.20/0.15/0.15, and the five other composite scores) are kept inline in each model rather than moved to dbt vars.
+The per-formula weights (e.g. markdown_safety_score's 0.45/0.30/0.25, premium_support_proxy_score's 0.30/0.20/0.20/0.15/0.15, and the five other composite scores) are kept inline in each model rather than moved to dbt vars.
 
 The reason: a weight belongs next to the formula it governs. A reader looking at the SQL sees both the components and their relative importance together; moving them to a config file requires two files to understand one computation. Additionally, changing a weight without simultaneously reviewing the adjacent formula and its neighbours is error-prone — the inline placement creates natural friction that prevents casual tuning of unvalidated knobs. These weights should only change when a specific empirical finding justifies it, at which point the formula and weight change together in the same commit.
 
@@ -108,6 +108,14 @@ Internal column names were renamed to be self-describing. No score value, formul
 |---|---|---|
 | `elasticity_tier` | `category_sensitivity_tier` | `mart_pricing_intelligence.sql`, `schema.yml`, `dashboard/queries.py`, `dashboard/app.py` |
 | `premium_tolerance_score` | `category_premium_tolerance_prior_score` | `mart_pricing_intelligence.sql`, `dashboard/queries.py`, `dashboard/app.py` |
+
+### Commit 3 — column rename (`pricing_power_score`)
+
+Reason: the score measures whether available signals SUPPORT holding a premium; it does not measure true pricing power, which would require sales and margin data. No formula, weight, threshold, or cascade condition changed — only the column name.
+
+| Old name | New name | Files |
+|---|---|---|
+| `pricing_power_score` | `premium_support_proxy_score` | `mart_pricing_intelligence.sql`, `mart_action_queue.sql`, `schema.yml`, `dashboard/queries.py`, `dashboard/app.py`, `docs/threshold_decisions.md`, `docs/scoring_methodology.md` |
 
 ---
 

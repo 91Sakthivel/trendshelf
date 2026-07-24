@@ -220,6 +220,10 @@ models:
           - dbt_utils.accepted_range:
               min_value: 0
               max_value: 100
+      - name: ppi_signal_stale
+        description: TRUE when the latest available FRED PPI month is more than max_ppi_staleness_months months behind this row's reference_month — PPI trend treated as unknown/unresolved rather than carried forward stale.
+        tests:
+          - not_null
 
   - name: mart_confidence_layer
     description: >

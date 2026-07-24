@@ -64,6 +64,35 @@ ppi_lags_stg as (
 
 ),
 
+-- ── Resolve latest available FRED month for each spine month, with a staleness
+--    guard ──────────────────────────────────────────────────────────────────────
+-- Same latest-available-as-of pattern as fact_market_signals.sql's fred_as_of CTE
+-- (lines 89-98): resolve the most recent FRED month <= each spine month. If that
+-- FRED month is more than {{ var('max_ppi_staleness_months') }} months behind the
+-- spine month, treat the PPI lag columns as unknown (NULL) rather than carrying an
+-- indefinitely stale reading forward. ppi_signal_stale records that determination
+-- explicitly so it's never a silent NULL.
+
+ppi_as_of as (
+
+    select
+        d.reference_month,
+        CASE
+            WHEN DATE_DIFF(d.reference_month, MAX(pl.reference_month), MONTH)
+                 <= {{ var('max_ppi_staleness_months') }}
+                THEN MAX(pl.reference_month)
+        END                                                      as ppi_month,
+        COALESCE(
+            DATE_DIFF(d.reference_month, MAX(pl.reference_month), MONTH)
+                > {{ var('max_ppi_staleness_months') }},
+            TRUE
+        )                                                        as ppi_signal_stale
+    from (select distinct reference_month from demand) d
+    left join ppi_lags_stg pl on pl.reference_month <= d.reference_month
+    group by d.reference_month
+
+),
+
 -- ── CPI lags from staging ──────────────────────────────────────────────────────
 
 cpi_lags_stg as (
@@ -125,6 +154,7 @@ base as (
         pl.ppi_1m_ago,
         pl.ppi_3m_ago,
         pl.ppi_6m_ago,
+        pa.ppi_signal_stale,
         cl.cpi_1m_ago,
         cl.cpi_3m_ago,
 
@@ -135,7 +165,8 @@ base as (
 
     from demand d
     left join retail_lags   rl on d.signal_id        = rl.signal_id
-    left join ppi_lags_stg  pl on d.reference_month  = pl.reference_month
+    left join ppi_as_of     pa on d.reference_month  = pa.reference_month
+    left join ppi_lags_stg  pl on pa.ppi_month        = pl.reference_month
     left join cpi_lags_stg  cl on d.reference_month  = cl.reference_month
     left join kroger_promo   k
            on d.reference_month = k.reference_month
@@ -237,6 +268,7 @@ scored as (
         avg_effective_price,
         retail_price_1m_ago,
         ppi_1m_ago,
+        ppi_signal_stale,
         overall_demand_gap_score,
         avg_search_interest,
 
@@ -288,6 +320,7 @@ select
     avg_effective_price,
     retail_price_1m_ago,
     ppi_1m_ago,
+    ppi_signal_stale,
     overall_demand_gap_score,
     avg_search_interest,
 

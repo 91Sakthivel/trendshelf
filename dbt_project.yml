@@ -61,6 +61,7 @@ vars:
   reliability_medium_gap_threshold:  25.0
   reliability_min_competitor_count:  10
   max_competitor_staleness_days:     14
+  max_ppi_staleness_months:           4    # PPI change treated as unknown beyond this many months stale (FRED's documented normal reporting lag is ~2 months; see fact_market_signals.sql header)
   # confidence smoothing (Laplace-style shrinkage toward zero)
   confidence_smoothing_k:            15.0
   # demand slope state (t-stat-like ratio threshold)

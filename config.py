@@ -39,6 +39,20 @@ COLLECT_BLS           = os.getenv("COLLECT_BLS",           "True")  == "True"
 # Source: walmart.com/store/2105-dallas-tx
 WALMART_DFW_STORE_ID = os.getenv("WALMART_DFW_STORE_ID", "2105")
 
+# ── FRED PPI series ──────────────────────────────────────────────────────────
+# FRED_SCORING_PPI_SERIES_ID must match dbt_project.yml's scoring_ppi_series_id.
+# If they drift, tests/assert_ppi_series_resolves.sql fails (stg_fred_ppi returns
+# zero rows for the configured var). See docs/threshold_decisions.md #7.4.
+FRED_SCORING_PPI_SERIES_ID = "PCU42440042440012"
+# SCORING SERIES — "PPI by Industry: Grocery and Related Product Merchant
+# Wholesalers: Wholesaling of Packaged Frozen and Canned Foods." A wholesale-trade
+# margin index, used as a cost proxy pending replacement.
+
+FRED_SUPPLEMENTARY_PPI_SERIES = ["PCU311311"]
+# Diagnostic only, not wired into scoring. "PPI by Industry: Food Manufacturing" —
+# the intended eventual replacement for FRED_SCORING_PPI_SERIES_ID. Collected
+# alongside the scoring series so it accumulates history ahead of the switch.
+
 # ── Dashboard deployment facts ─────────────────────────────────────────────────
 TOTAL_DBT_MODELS = 19
 

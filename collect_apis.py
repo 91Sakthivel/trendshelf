@@ -25,6 +25,7 @@ from config import (
     WALMART_QUERIES, GOOGLE_TRENDS_KEYWORDS,
     COLLECT_GOOGLE_TRENDS, COLLECT_SERPAPI,
     COLLECT_KROGER, COLLECT_FRED, COLLECT_BLS,
+    FRED_SCORING_PPI_SERIES_ID, FRED_SUPPLEMENTARY_PPI_SERIES,
 )
 
 CREDS_FILE = CREDENTIALS_PATH
@@ -197,45 +198,73 @@ def collect_google_trends() -> bool:
         return False
 
 
+def _fetch_fred_series(series_id: str) -> pd.DataFrame | None:
+    """Fetch one FRED series, 24 months. Returns None if FRED returned no observations."""
+    resp = requests.get(
+        "https://api.stlouisfed.org/fred/series/observations",
+        params={
+            "series_id":  series_id,
+            "api_key":    FRED_API_KEY,
+            "file_type":  "json",
+            "sort_order": "desc",
+            "limit":      24,
+        },
+        timeout=10,
+    )
+    resp.raise_for_status()
+    obs = resp.json().get("observations", [])
+    if not obs:
+        return None
+
+    df = pd.DataFrame(obs)[["date", "value"]]
+    df = df[df["value"] != "."].copy()
+    df["observation_date"] = pd.to_datetime(df["date"]).dt.date
+    df["ppi_value"]        = df["value"].astype(float)
+    df["series_id"]        = series_id
+    df["collected_at"]     = RUN_TS
+    df["load_timestamp"]   = RUN_TS
+    df = df.drop(columns=["date", "value"])
+    log.info("[2/5] FRED PPI — %s PASS  (latest %s = %s)", series_id, obs[0]["date"], obs[0]["value"])
+    return df
+
+
 def collect_fred_ppi() -> bool:
-    """FRED API — PPI PCU42440042440012, 24 months  →  fred_ppi_raw"""
+    """
+    FRED API — scoring series + supplementary series, 24 months each  →  fred_ppi_raw
+    (single combined write).
+
+    The scoring series is required: any failure aborts with no write at all, so a bad
+    supplementary-series fetch can never block or partially overwrite it. Supplementary
+    series are optional: a failure is logged and skipped, never blocking the scoring
+    series' write.
+    """
     log.info("[2/5] FRED PPI — collecting...")
+
     try:
-        resp = requests.get(
-            "https://api.stlouisfed.org/fred/series/observations",
-            params={
-                "series_id":  "PCU42440042440012",
-                "api_key":    FRED_API_KEY,
-                "file_type":  "json",
-                "sort_order": "desc",
-                "limit":      24,
-            },
-            timeout=10,
-        )
-        resp.raise_for_status()
-        obs = resp.json().get("observations", [])
-
-        if not obs:
-            log.warning("[2/5] FRED PPI — no observations returned")
-            return False
-
-        df = pd.DataFrame(obs)[["date", "value"]]
-        df = df[df["value"] != "."].copy()
-
-        df["observation_date"] = pd.to_datetime(df["date"]).dt.date
-        df["ppi_value"]        = df["value"].astype(float)
-        df["series_id"]        = "PCU42440042440012"
-        df["collected_at"]     = RUN_TS
-        df["load_timestamp"]   = RUN_TS
-        df = df.drop(columns=["date", "value"])
-
-        _upload(df, "fred_ppi_raw")
-        log.info("[2/5] FRED PPI — PASS  (latest %s = %s)", obs[0]["date"], obs[0]["value"])
-        return True
-
+        scoring_df = _fetch_fred_series(FRED_SCORING_PPI_SERIES_ID)
     except Exception as exc:
-        log.error("[2/5] FRED PPI — FAIL  %s", exc)
+        log.error("[2/5] FRED PPI — FAIL  scoring series %s: %s", FRED_SCORING_PPI_SERIES_ID, exc)
         return False
+
+    if scoring_df is None:
+        log.error("[2/5] FRED PPI — FAIL  no observations for scoring series %s", FRED_SCORING_PPI_SERIES_ID)
+        return False
+
+    frames = [scoring_df]
+
+    for series_id in FRED_SUPPLEMENTARY_PPI_SERIES:
+        try:
+            df = _fetch_fred_series(series_id)
+            if df is None:
+                log.warning("[2/5] FRED PPI — no observations for supplementary series %s, skipping", series_id)
+                continue
+            frames.append(df)
+        except Exception as exc:
+            log.warning("[2/5] FRED PPI — supplementary series %s failed, skipping: %s", series_id, exc)
+
+    combined = pd.concat(frames, ignore_index=True)
+    _upload(combined, "fred_ppi_raw")
+    return True
 
 
 def collect_kroger_prices() -> bool:

@@ -62,6 +62,15 @@ vars:
   reliability_min_competitor_count:  10
   max_competitor_staleness_days:     14
   max_ppi_staleness_months:           4    # PPI change treated as unknown beyond this many months stale (FRED's documented normal reporting lag is ~2 months; see fact_market_signals.sql header)
+  # ── FRED series-awareness ─────────────────────────────────────────────────────
+  # Single point of truth for which FRED series scoring uses. stg_fred_ppi filters to
+  # exactly this series; every downstream model assumes a single-series time series.
+  scoring_ppi_series_id: 'PCU42440042440012'
+  # Minimum monthly rows stg_fred_ppi must have. int_macro_trend_features.sql's
+  # ppi_yoy_value = LAG(ppi_value, 12) needs 13 rows for even the most recent month to
+  # produce a non-null year-over-year comparison; below 13 that feature is unconditionally
+  # NULL for every row - a silent truncation, not an explicit failure.
+  min_ppi_monthly_rows:               13
   # confidence smoothing (Laplace-style shrinkage toward zero)
   confidence_smoothing_k:            15.0
   # demand slope state (t-stat-like ratio threshold)

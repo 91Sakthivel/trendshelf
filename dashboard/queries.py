@@ -224,7 +224,7 @@ def get_top_pricing_actions() -> pd.DataFrame:
             action_confidence_score,
             action_confidence_level,
             ROUND(price_gap_pct,        1) AS price_gap_pct,
-            elasticity_tier
+            category_sensitivity_tier
         FROM `{P}.{D}.mart_pricing_intelligence`
         WHERE recommended_price_action NOT IN ('Monitor', 'Investigate')
         ORDER BY action_confidence_score DESC

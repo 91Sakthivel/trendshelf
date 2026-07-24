@@ -820,8 +820,8 @@ elif page == "Pricing Intelligence":
 
     f1, f2, f3, f4 = st.columns(4)
     with f1:
-        elast_opts = sorted(pi["elasticity_tier"].dropna().unique().tolist())
-        sel_elast  = st.multiselect("Elasticity Tier", elast_opts, default=elast_opts)
+        elast_opts = sorted(pi["category_sensitivity_tier"].dropna().unique().tolist())
+        sel_elast  = st.multiselect("Sensitivity Tier", elast_opts, default=elast_opts)
     with f2:
         act_opts   = sorted(pi["recommended_price_action"].dropna().unique().tolist())
         sel_act    = st.multiselect("Action Type", act_opts, default=act_opts)
@@ -834,7 +834,7 @@ elif page == "Pricing Intelligence":
     st.caption("Review Price Reduction recommendations only appear under High reliability.")
 
     filtered = pi[
-        pi["elasticity_tier"].isin(sel_elast) &
+        pi["category_sensitivity_tier"].isin(sel_elast) &
         pi["recommended_price_action"].isin(sel_act) &
         pi["price_gap_confidence"].isin(sel_badge) &
         pi["price_gap_reliability"].isin(sel_rel)
@@ -848,7 +848,7 @@ elif page == "Pricing Intelligence":
         st.warning("No rows match the selected filters.")
     else:
         cols_show = [
-            "store_city", "category_name", "elasticity_tier",
+            "store_city", "category_name", "category_sensitivity_tier",
             "kroger_avg_price", "competitor_avg_price",
             "price_gap_pct", "adjusted_price_gap_pct",
             "price_position", "price_position_threshold",
@@ -867,7 +867,7 @@ elif page == "Pricing Intelligence":
         tbl3 = filtered[cols_show].rename(columns={
             "store_city":                 "Store",
             "category_name":              "Category",
-            "elasticity_tier":            "Elasticity",
+            "category_sensitivity_tier":   "Elasticity",
             "kroger_avg_price":           "Kroger $",
             "competitor_avg_price":       "Walmart $",
             "price_gap_pct":              "Gap %",
@@ -926,7 +926,7 @@ elif page == "Pricing Intelligence":
         "Price bands are calibrated to each category's price variation (CV), bounded 8-25%. "
         "Method: CV calibrated absolute band. "
         "Competitor prices from Walmart DFW Store 2105 (LBJ Fwy, Dallas TX). "
-        "Elasticity tiers are industry priors. "
+        "Sensitivity tiers are industry priors. "
         "Price gap confidence weighted by competitor product count."
     )
 

@@ -33,16 +33,16 @@
 with category_elasticity as (
 
     select * from UNNEST([
-        STRUCT('beverages'        as category, 'Low'    as elasticity_tier, 70 as premium_tolerance_score),
-        STRUCT('snacks'           as category, 'Medium' as elasticity_tier, 55 as premium_tolerance_score),
-        STRUCT('dairy'            as category, 'High'   as elasticity_tier, 30 as premium_tolerance_score),
-        STRUCT('frozen foods'     as category, 'High'   as elasticity_tier, 35 as premium_tolerance_score),
-        STRUCT('breakfast cereal' as category, 'Medium' as elasticity_tier, 55 as premium_tolerance_score),
-        STRUCT('meat seafood'     as category, 'High'   as elasticity_tier, 30 as premium_tolerance_score),
-        STRUCT('produce'          as category, 'High'   as elasticity_tier, 25 as premium_tolerance_score),
-        STRUCT('personal care'    as category, 'Low'    as elasticity_tier, 75 as premium_tolerance_score),
-        STRUCT('household'        as category, 'High'   as elasticity_tier, 35 as premium_tolerance_score),
-        STRUCT('coffee tea'       as category, 'Low'    as elasticity_tier, 80 as premium_tolerance_score)
+        STRUCT('beverages'        as category, 'Low'    as category_sensitivity_tier, 70 as category_premium_tolerance_prior_score),
+        STRUCT('snacks'           as category, 'Medium' as category_sensitivity_tier, 55 as category_premium_tolerance_prior_score),
+        STRUCT('dairy'            as category, 'High'   as category_sensitivity_tier, 30 as category_premium_tolerance_prior_score),
+        STRUCT('frozen foods'     as category, 'High'   as category_sensitivity_tier, 35 as category_premium_tolerance_prior_score),
+        STRUCT('breakfast cereal' as category, 'Medium' as category_sensitivity_tier, 55 as category_premium_tolerance_prior_score),
+        STRUCT('meat seafood'     as category, 'High'   as category_sensitivity_tier, 30 as category_premium_tolerance_prior_score),
+        STRUCT('produce'          as category, 'High'   as category_sensitivity_tier, 25 as category_premium_tolerance_prior_score),
+        STRUCT('personal care'    as category, 'Low'    as category_sensitivity_tier, 75 as category_premium_tolerance_prior_score),
+        STRUCT('household'        as category, 'High'   as category_sensitivity_tier, 35 as category_premium_tolerance_prior_score),
+        STRUCT('coffee tea'       as category, 'Low'    as category_sensitivity_tier, 80 as category_premium_tolerance_prior_score)
     ])
 
 ),
@@ -349,8 +349,8 @@ base as (
         c.overall_confidence_score,
 
         -- Elasticity prior
-        COALESCE(e.elasticity_tier,           'Medium')         as elasticity_tier,
-        COALESCE(e.premium_tolerance_score,    50)              as premium_tolerance_score,
+        COALESCE(e.category_sensitivity_tier,           'Medium')         as category_sensitivity_tier,
+        COALESCE(e.category_premium_tolerance_prior_score,    50)              as category_premium_tolerance_prior_score,
 
         -- Temporal features (NULL on first collection; populated from 2nd date onward)
         tf.previous_price_gap_pct,
@@ -436,8 +436,8 @@ scored as (
         COALESCE(promo_risk_score,         30)                  as promo_risk_score,
         COALESCE(overall_confidence_score, 50)                  as confidence_score,
 
-        elasticity_tier,
-        premium_tolerance_score,
+        category_sensitivity_tier,
+        category_premium_tolerance_prior_score,
 
         -- Temporal features (passed through from base; NULL = first collection)
         previous_price_gap_pct,
@@ -547,7 +547,7 @@ derived as (
         LEAST(100, GREATEST(0,
             overall_demand_gap_score  * 0.30
             + category_momentum_score * 0.20
-            + premium_tolerance_score * 0.20
+            + category_premium_tolerance_prior_score * 0.20
             + markdown_safety_score   * 0.15
             + confidence_score        * 0.15
         ))                                                      as pricing_power_score,
@@ -683,7 +683,7 @@ actioned as (
             WHEN price_position = 'Overpriced'
              AND demand_signal = 'High'
              AND pricing_power_score >= {{ var('pricing_power_hold_threshold') }}
-             AND elasticity_tier IN ('Low', 'Medium')
+             AND category_sensitivity_tier IN ('Low', 'Medium')
              AND competitive_intensity != 'Saturated'
              AND (
                  competitor_relevance_level IN ('Low', 'Medium')
@@ -698,7 +698,7 @@ actioned as (
              AND demand_signal IN ('Low', 'Medium')
              AND adjusted_price_gap_pct > {{ var('reduce_price_min_gap_pct') }}
              AND markdown_safety_score >= {{ var('markdown_safety_full_threshold') }}
-             AND elasticity_tier IN ('High', 'Medium')
+             AND category_sensitivity_tier IN ('High', 'Medium')
              AND competitor_relevance_level IN ('High', 'Medium')
              AND price_gap_reliability = 'High'
                 THEN 'Review Price Reduction'
@@ -850,8 +850,8 @@ select
     ROUND(markdown_safety_score,    2)                          as markdown_safety_score,
 
     -- Elasticity
-    elasticity_tier,
-    premium_tolerance_score,
+    category_sensitivity_tier,
+    category_premium_tolerance_prior_score,
     'Industry prior'                                            as elasticity_source,
 
     -- Composite scores
@@ -926,7 +926,7 @@ select
             '% above Walmart but demand is strong (',
             CAST(ROUND(overall_demand_gap_score, 0) AS STRING),
             '/100) and category has premium tolerance (',
-            CAST(premium_tolerance_score AS STRING), '/100). Hold price.'
+            CAST(category_premium_tolerance_prior_score AS STRING), '/100). Hold price.'
         )
         WHEN 'Review Price Reduction' THEN CONCAT(
             'Kroger is ', CAST(ROUND(COALESCE(price_gap_pct, 0), 0) AS STRING),

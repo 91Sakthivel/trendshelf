@@ -336,7 +336,7 @@ models:
           - not_null
           - accepted_values:
               values: ['High', 'Medium', 'Low', 'Missing']
-      - name: elasticity_tier
+      - name: category_sensitivity_tier
         tests:
           - not_null
           - accepted_values:

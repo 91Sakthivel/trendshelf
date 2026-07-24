@@ -71,6 +71,12 @@ vars:
   # produce a non-null year-over-year comparison; below 13 that feature is unconditionally
   # NULL for every row - a silent truncation, not an explicit failure.
   min_ppi_monthly_rows:               13
+  # Month-over-month PPI % moves at or below this are treated as flat, not "rising", in
+  # mart_price_margin_scores.sql's margin_pressure_proxy_score branch tests. Derived from
+  # PCU311311's own historical distribution (17 months): a 6x gap sits between the two
+  # smallest observed moves (0.0248%, 0.0333%) and the next (0.2002%); 0.1 sits centered in
+  # that gap. See docs/threshold_decisions.md #7.8.
+  ppi_deadband_pct:                   0.1
   # confidence smoothing (Laplace-style shrinkage toward zero)
   confidence_smoothing_k:            15.0
   # demand slope state (t-stat-like ratio threshold)

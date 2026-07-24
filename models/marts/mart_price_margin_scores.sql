@@ -156,6 +156,14 @@ base as (
         pl.ppi_3m_ago,
         pl.ppi_6m_ago,
         pa.ppi_signal_stale,
+        -- Month-over-month PPI % change, computed once here so both the branch-80 and
+        -- branch-40 tests in `scored` read the same value instead of duplicating the
+        -- expression. Same null-handling as the old inline `>` comparison: a NULL
+        -- ppi_1m_ago collapses the numerator to 0, giving 0% change (not NULL, not an error).
+        SAFE_DIVIDE(
+            d.ppi_value - COALESCE(pl.ppi_1m_ago, d.ppi_value),
+            NULLIF(COALESCE(pl.ppi_1m_ago, d.ppi_value), 0)
+        ) * 100                                                as ppi_mom_pct_change,
         cl.cpi_1m_ago,
         cl.cpi_3m_ago,
 
@@ -215,16 +223,19 @@ scored as (
         ))                                          as cost_shock_score,
 
         -- ── 3. Margin Pressure Risk ───────────────────────────────────────────
-        -- Retail price stagnant / falling while PPI rising = margin being squeezed.
+        -- Retail price stagnant / falling while PPI rising (beyond the noise deadband)
+        -- = margin being squeezed. ppi_mom_pct_change > var('ppi_deadband_pct') treats
+        -- moves at or below the deadband as flat, not "rising" (see docs/threshold_
+        -- decisions.md #7.8 for the natural-gap derivation of the 0.1 threshold).
         LEAST(100, GREATEST(0,
             CASE
                 WHEN retail_price IS NULL OR ppi_value IS NULL THEN 30
                 WHEN retail_price <= COALESCE(retail_price_1m_ago, retail_price)
-                 AND ppi_value     > COALESCE(ppi_1m_ago, ppi_value)
+                 AND ppi_mom_pct_change > {{ var('ppi_deadband_pct') }}
                     THEN 80  -- classic margin squeeze
                 WHEN retail_price <= COALESCE(retail_price_1m_ago, retail_price)
                     THEN 55  -- price compression only
-                WHEN ppi_value > COALESCE(ppi_1m_ago, ppi_value)
+                WHEN ppi_mom_pct_change > {{ var('ppi_deadband_pct') }}
                     THEN 40  -- cost rising; retail price holding for now
                 ELSE
                     -- Healthy: price rising faster than costs

@@ -693,14 +693,14 @@ def main() -> int:
     else:
         print("  [SKIP] Google Trends — prices mode (weekly run)")
 
-    # ── FRED PPI: full mode only ───────────────────────────────────────────────
-    if mode == "full":
-        if COLLECT_FRED:
-            results["fred_ppi_raw"] = collect_fred_ppi()
-        else:
-            print("  [SKIP] FRED PPI — COLLECT_FRED=False in config")
+    # ── FRED PPI: both modes ────────────────────────────────────────────────────
+    # FRED is free with no meaningful quota; collecting it on the weekly prices
+    # cron (not just full mode) keeps stg_fred_ppi from going stale between the
+    # rare full-mode runs.
+    if COLLECT_FRED:
+        results["fred_ppi_raw"] = collect_fred_ppi()
     else:
-        print("  [SKIP] FRED PPI — prices mode (weekly run)")
+        print("  [SKIP] FRED PPI — COLLECT_FRED=False in config")
 
     # ── BLS CPI: full mode only ────────────────────────────────────────────────
     if mode == "full":

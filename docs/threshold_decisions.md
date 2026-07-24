@@ -218,3 +218,9 @@ The intended replacement is `PCU311311` (Food Manufacturing) — a producer-side
 ### 7.5 Standing rule
 
 Check any FRED series' own page (title, breadcrumb category, units) before using it as an input to a model. FRED's breadcrumb path **"Industry Based > Wholesale Trade"** means the series measures trade margins, not the prices or costs a wholesale-trade series' name might suggest at a glance. This applies to every FRED series considered for TrendShelf going forward, not only PPI.
+
+### 7.6 FRED now refreshes weekly
+
+`collect_apis.py`'s FRED PPI block was moved out of the `if mode == "full":` gate to run in both modes, matching Kroger/SerpAPI — it now runs on the weekly `--mode prices` cron, not only during rare full-mode runs. `FRED_API_KEY` was added to `.github/workflows/weekly-collection.yml`'s collect-job `env:` block so the CI run can actually authenticate. Google Trends and BLS CPI remain full-mode-only, unchanged.
+
+Before this, FRED had been collected exactly once (a manual full-mode pull) and never refreshed by CI, so `stg_fred_ppi` sat stuck at April 2026 while FRED itself had already published June. The **"2-month reporting lag"** documented in `fact_market_signals.sql`'s header and handled by the `fred_as_of` latest-available-as-of join is a real, permanent property of FRED's publishing schedule — it does not go away. What does go away with this change is the *second*, unrelated lag that had been stacking on top of it: TrendShelf simply never asking FRED for new data. Going forward, `stg_fred_ppi` should track FRED's own publishing lag only, not a multi-month collection gap on top of it.

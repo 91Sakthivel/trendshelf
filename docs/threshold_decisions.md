@@ -215,6 +215,8 @@ None of the following files reference `series_id` — they rely entirely on the 
 
 The intended replacement is `PCU311311` (Food Manufacturing) — a producer-side cost index, not a wholesale-margin index. That switch is **not made in this commit or in commit `44afed8`**: `PCU311311` collection is added to the raw pipeline separately, and `scoring_ppi_series_id` stays pointed at `PCU42440042440012` until a deliberate later switch. The fix for the series-identity problem itself remains pending.
 
+**Update:** the switch is made in §7.7 below.
+
 ### 7.5 Standing rule
 
 Check any FRED series' own page (title, breadcrumb category, units) before using it as an input to a model. FRED's breadcrumb path **"Industry Based > Wholesale Trade"** means the series measures trade margins, not the prices or costs a wholesale-trade series' name might suggest at a glance. This applies to every FRED series considered for TrendShelf going forward, not only PPI.
@@ -224,3 +226,33 @@ Check any FRED series' own page (title, breadcrumb category, units) before using
 `collect_apis.py`'s FRED PPI block was moved out of the `if mode == "full":` gate to run in both modes, matching Kroger/SerpAPI — it now runs on the weekly `--mode prices` cron, not only during rare full-mode runs. `FRED_API_KEY` was added to `.github/workflows/weekly-collection.yml`'s collect-job `env:` block so the CI run can actually authenticate. Google Trends and BLS CPI remain full-mode-only, unchanged.
 
 Before this, FRED had been collected exactly once (a manual full-mode pull) and never refreshed by CI, so `stg_fred_ppi` sat stuck at April 2026 while FRED itself had already published June. The **"2-month reporting lag"** documented in `fact_market_signals.sql`'s header and handled by the `fred_as_of` latest-available-as-of join is a real, permanent property of FRED's publishing schedule — it does not go away. What does go away with this change is the *second*, unrelated lag that had been stacking on top of it: TrendShelf simply never asking FRED for new data. Going forward, `stg_fred_ppi` should track FRED's own publishing lag only, not a multi-month collection gap on top of it.
+
+### 7.7 The PPI series swap: `PCU42440042440012` → `PCU311311`
+
+`scoring_ppi_series_id` changed from `PCU42440042440012` (Grocery and Related Product Merchant Wholesalers — a wholesale-trade margin index, per §7.4) to `PCU311311` (Producer Price Index by Industry: Food Manufacturing — a genuine producer-side input-cost index). One line in `dbt_project.yml`; no collector change, since both series were already being collected (§7.6 / the `FRED_SUPPLEMENTARY_PPI_SERIES` work). This is a deliberate scoring change — every number downstream of `margin_pressure_proxy_score` moved.
+
+**Pre-swap verification:** `PCU311311` resolves to 18 rows after the staging filter (`observation_date >= '2025-01-01'`, deduped), against a floor of `min_ppi_monthly_rows` = 13. `dbt run` (24/24 models) and `dbt test` (143 pass, 1 pre-existing unrelated warn on `stg_kroger_prices.price_regular`, 0 errors) both passed after the swap, including `assert_ppi_series_resolves` and `assert_ppi_series_coverage`.
+
+**Score movement** (all 400 rows, both marts):
+
+| Metric | Before | After | Delta |
+|---|---|---|---|
+| `margin_pressure_proxy_score` min/max/avg | 29.52 / 55.0 / 50.56 | 40.0 / 80.0 / 72.90 | +10.48 / +25.00 / +22.34 |
+| `cost_shock_score` (constant across all rows) | 14.02 | 9.15 | -4.87 |
+| `overall_margin_risk_score` min/max/avg | 26.88 / 52.51 / 43.12 | 29.85 / 61.29 / 50.84 | +2.97 / +8.78 / +7.72 |
+| `store_market_fit_score` min/max/avg | 31.58 / 67.38 / 44.28 | 26.58 / 65.28 / 39.81 | -5.00 / -2.10 / -4.47 |
+| `overall_confidence_score` min/max/avg | 83.2 / 91.95 / 87.31 | 86.95 / 91.95 / 87.70 | +3.75 / +0.00 / +0.39 |
+
+`cost_passthrough_rate` stayed at 0.0 for all rows before and after — unaffected, still gated by the pre-existing `retail_price_3m_ago` history gap (§ prior sessions, unrelated to this change).
+
+**Branch distribution flip.** Before: `BRANCH_55_COMPRESSION` 329, `BRANCH_HEALTHY` 71 (0 in `BRANCH_80_SQUEEZE`/`BRANCH_40_COST_RISING`). After: `BRANCH_80_SQUEEZE` 329, `BRANCH_40_COST_RISING` 71 (0 in `BRANCH_55_COMPRESSION`/`BRANCH_HEALTHY`). Every row that used to land in the "retail price flat/falling" branch without a cost-rising kicker now gets the kicker, and likewise for the "retail price rising" branch.
+
+The reason is structural, not series-specific: `mart_demand_gap_scores` currently has only **two** distinct `reference_month` values (2026-06-01, 2026-07-01), and both resolve through `ppi_as_of` to the **same** latest available PPI month (2026-06-01, since 2026-07's own PPI hasn't published yet and falls within the staleness window). That means `ppi_value > ppi_1m_ago` is a single shared boolean applied identically to all 400 rows, not something that varies row-by-row — it was `NOT_RISING` for every row against the old series' resolved month, and it is `RISING` (274.942 vs. 273.557, May→June 2026) for every row against the new series' resolved month. `BRANCH_55_COMPRESSION`/`BRANCH_HEALTHY` are still reachable in principle — they just require a spine month whose resolved PPI reading isn't a month-over-month increase, which neither of the two current spine months has. This will diversify as more distinct `reference_month` values accumulate.
+
+**Read the 329 correctly:** with only two reference months present, the "is PPI rising" test is **one shared boolean across all 400 rows**, not 400 independent measurements. The 329 rows landing in `BRANCH_80_SQUEEZE` reflect a single national PPI reading (May→June 2026, +0.5%) combined with each row's own retail-price direction — they are not 329 independent squeeze findings, and the count "329" says more about how many store×category pairs had flat/falling retail price this month than about 329 distinct cost-shock events. This resolves on its own as more months accumulate: once `reference_month` spans enough distinct PPI-resolved months to include both rising and non-rising readings, and per-row retail-price history diverges further, the branch mix will stop being dominated by a single shared macro signal.
+
+**`PCU311311`'s own recent monthly % changes** (Dec 2025 → Jun 2026): -0.03%, +0.23%, +0.71%, +0.80%, +0.51%, +0.51%. All under 1%, consistent with a genuine, low-volatility cost index — a sharp contrast with the old series' documented behavior (§ prior session: avg 2.5%, max 7.7% monthly moves), which was the original tell that `PCU42440042440012` wasn't behaving like a normal PPI.
+
+**Invariant check:** "Review Price Reduction" rows under Low reliability = **0**, both before and after. Holds.
+
+**Fixed in the same commit:** `config.py`'s `FRED_SCORING_PPI_SERIES_ID`/`FRED_SUPPLEMENTARY_PPI_SERIES` were swapped to match — `FRED_SCORING_PPI_SERIES_ID` now names `PCU311311` (abort-on-failure), `FRED_SUPPLEMENTARY_PPI_SERIES` now lists `PCU42440042440012` (warn-and-skip-on-failure). `collect_apis.py` reads both constants by name and needed no code change; the essential-series-first fetch order is unchanged, so the collector still fetches both series. Also fixed: `models/schema.yml`'s `stg_fred_ppi` description (line 54), which still read "energy drink wholesalers (FRED PCU42440042440012)" — a stale description missed by the original four-site cleanup, now corrected to Food Manufacturing (PCU311311), same as the other four sites.

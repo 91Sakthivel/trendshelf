@@ -15,9 +15,13 @@ sources:
 
       - name: fred_ppi_raw
         description: >
-          FRED series PCU42440042440012 — Producer Price Index by Industry: Grocery and
-          Related Product Merchant Wholesalers: Wholesaling of Packaged Frozen and Canned
-          Foods. 24 months, most-recent first.
+          Raw FRED PPI observations, may carry more than one series (see stg_fred_ppi.sql
+          for the single-series scoring filter). Currently holds PCU311311 — Producer Price
+          Index by Industry: Food Manufacturing (the scoring series) — and PCU42440042440012
+          — Producer Price Index by Industry: Grocery and Related Product Merchant
+          Wholesalers: Wholesaling of Packaged Frozen and Canned Foods (a wholesale-trade
+          margin index, collected as a supplementary series only). 24 months, most-recent
+          first.
         loaded_at_field: collected_at
         freshness:
           warn_after:  {count: 9,  period: day}

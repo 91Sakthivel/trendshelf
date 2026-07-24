@@ -42,16 +42,17 @@ WALMART_DFW_STORE_ID = os.getenv("WALMART_DFW_STORE_ID", "2105")
 # ── FRED PPI series ──────────────────────────────────────────────────────────
 # FRED_SCORING_PPI_SERIES_ID must match dbt_project.yml's scoring_ppi_series_id.
 # If they drift, tests/assert_ppi_series_resolves.sql fails (stg_fred_ppi returns
-# zero rows for the configured var). See docs/threshold_decisions.md #7.4.
-FRED_SCORING_PPI_SERIES_ID = "PCU42440042440012"
-# SCORING SERIES — "PPI by Industry: Grocery and Related Product Merchant
-# Wholesalers: Wholesaling of Packaged Frozen and Canned Foods." A wholesale-trade
-# margin index, used as a cost proxy pending replacement.
+# zero rows for the configured var). See docs/threshold_decisions.md #7.7.
+FRED_SCORING_PPI_SERIES_ID = "PCU311311"
+# SCORING SERIES — "PPI by Industry: Food Manufacturing." A producer-side
+# input-cost index. Swapped in from PCU42440042440012 (see below); a fetch
+# failure on this series aborts the whole collector write, since dbt scores it.
 
-FRED_SUPPLEMENTARY_PPI_SERIES = ["PCU311311"]
-# Diagnostic only, not wired into scoring. "PPI by Industry: Food Manufacturing" —
-# the intended eventual replacement for FRED_SCORING_PPI_SERIES_ID. Collected
-# alongside the scoring series so it accumulates history ahead of the switch.
+FRED_SUPPLEMENTARY_PPI_SERIES = ["PCU42440042440012"]
+# Diagnostic only, not wired into scoring. "PPI by Industry: Grocery and Related
+# Product Merchant Wholesalers: Wholesaling of Packaged Frozen and Canned Foods."
+# A wholesale-trade margin index — the prior scoring series, retained for
+# comparison. A fetch failure here only warns and is skipped.
 
 # ── Dashboard deployment facts ─────────────────────────────────────────────────
 TOTAL_DBT_MODELS = 19

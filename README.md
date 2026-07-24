@@ -42,7 +42,7 @@ Streamlit Dashboard (4 pages)
 |--------|-----------------|---------|
 | **Kroger API** | Live shelf prices across 20 DFW stores, 10 categories | Weekly |
 | **SerpAPI (Walmart)** | Competitor pricing at Walmart DFW #2105 | Weekly |
-| **FRED API** | Producer Price Index by Industry: Grocery and Related Product Merchant Wholesalers: Wholesaling of Packaged Frozen and Canned Foods | Monthly |
+| **FRED API** | Producer Price Index by Industry: Food Manufacturing (PCU311311) | Monthly |
 | **BLS API** | Consumer Price Index by category | Monthly |
 | **Google Trends** | Search demand signals by category keyword | One-time historical baseline |
 

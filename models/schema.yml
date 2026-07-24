@@ -51,8 +51,9 @@ models:
 
   - name: stg_fred_ppi
     description: >
-      Monthly Producer Price Index for energy drink wholesalers (FRED PCU42440042440012).
-      One row per observation month, 2025-01-01 onwards.
+      Monthly Producer Price Index by Industry: Food Manufacturing (FRED PCU311311),
+      filtered to a single scoring series. One row per observation month, 2025-01-01
+      onwards.
     columns:
       - name: observation_date
         description: First day of the observation month (DATE)

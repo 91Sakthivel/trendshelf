@@ -65,7 +65,7 @@ vars:
   # ── FRED series-awareness ─────────────────────────────────────────────────────
   # Single point of truth for which FRED series scoring uses. stg_fred_ppi filters to
   # exactly this series; every downstream model assumes a single-series time series.
-  scoring_ppi_series_id: 'PCU42440042440012'
+  scoring_ppi_series_id: 'PCU311311'
   # Minimum monthly rows stg_fred_ppi must have. int_macro_trend_features.sql's
   # ppi_yoy_value = LAG(ppi_value, 12) needs 13 rows for even the most recent month to
   # produce a non-null year-over-year comparison; below 13 that feature is unconditionally

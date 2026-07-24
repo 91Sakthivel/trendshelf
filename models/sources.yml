@@ -15,8 +15,9 @@ sources:
 
       - name: fred_ppi_raw
         description: >
-          FRED series PCU42440042440012 — monthly Producer Price Index for
-          food manufacturing. 24 months, most-recent first.
+          FRED series PCU42440042440012 — Producer Price Index by Industry: Grocery and
+          Related Product Merchant Wholesalers: Wholesaling of Packaged Frozen and Canned
+          Foods. 24 months, most-recent first.
         loaded_at_field: collected_at
         freshness:
           warn_after:  {count: 9,  period: day}

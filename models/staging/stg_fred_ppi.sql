@@ -1,7 +1,7 @@
 {{
     config(
         materialized = 'view',
-        description  = 'Monthly Producer Price Index for energy drink wholesalers (FRED PCU42440042440012). Filtered to a single scoring series (var scoring_ppi_series_id) — every downstream consumer assumes exactly one series flows through this model.'
+        description  = 'FRED PCU42440042440012 — Producer Price Index by Industry: Grocery and Related Product Merchant Wholesalers: Wholesaling of Packaged Frozen and Canned Foods. A wholesale-trade margin index, not an input-cost index. Filtered to a single scoring series (var scoring_ppi_series_id) — every downstream consumer assumes exactly one series flows through this model.'
     )
 }}
 
@@ -17,6 +17,13 @@
   int_macro_trend_features) can assume a single-series monthly time series with no
   series_id filter or PARTITION BY of its own. Guarded by tests/assert_ppi_series_resolves.sql
   and tests/assert_ppi_series_coverage.sql.
+
+  Dedup: the QUALIFY below keeps the latest collected_at per (series_id, observation_date).
+  Not required by the current collector (_upload uses WRITE_TRUNCATE against an undecorated
+  destination, replacing the whole fred_ppi_raw table each run rather than appending), but
+  this model doesn't rely on that write behavior staying that way. Guarded by
+  tests/assert_fred_ppi_raw_no_duplicate_months.sql, which checks the raw source directly
+  (checking this model would be circular - the QUALIFY guarantees it can never fail here).
 */
 
 with source as (
@@ -38,6 +45,10 @@ staged as (
     from source
     where observation_date >= '2025-01-01'
       and series_id = '{{ var("scoring_ppi_series_id") }}'
+    qualify ROW_NUMBER() OVER (
+        PARTITION BY series_id, observation_date
+        ORDER BY collected_at DESC
+    ) = 1
 
 )
 

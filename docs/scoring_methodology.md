@@ -12,7 +12,7 @@ TrendShelf scores each combination of Kroger store × product category × month 
 |--------|-----------------|-----------------|-------------|
 | Kroger prices (Kroger API) | Retail shelf prices, promo activity, product count per store × category | Weekly | Measured |
 | Google Trends (pytrends) | Consumer search interest by category, US-level, daily | Weekly | Measured (proxy for consumer intent) |
-| FRED PPI (FRED API) | Producer Price Index for beverage/food wholesalers — input cost pressure | Monthly (2-month lag) | Measured |
+| FRED PPI (FRED API) | Producer Price Index by Industry: Grocery and Related Product Merchant Wholesalers: Wholesaling of Packaged Frozen and Canned Foods — a wholesale-trade margin index, applied as a cost proxy | Monthly (2-month lag) | Measured |
 | BLS CPI (BLS API) | Consumer Price Index for Food at home — retail inflation benchmark | Monthly (2-month lag) | Measured |
 | SerpAPI competitor prices | Competitor shelf prices from Google Shopping (Walmart proxy) | Weekly | Measured |
 

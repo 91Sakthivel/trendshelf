@@ -168,3 +168,53 @@ Result: counts match. ✓
 Literal strings assigned per CTE: `'Gap Flip'` (gap_flip CTE), `'Big Move'` (big_move CTE), `'3-Collection Streak'` (new_sustained CTE) = **3 values**.
 `accepted_values` list in `schema.yml`: `['Gap Flip', 'Big Move', '3-Collection Streak']` = **3 values**.
 Result: counts match. ✓
+
+---
+
+## 7. FRED PPI — single-series contract and series identity finding
+
+Covers commit `44afed8` (FRED single-series contract at the staging layer), which shipped without a doc entry.
+
+### 7.1 The single-series staging contract
+
+`fred_ppi_raw` can carry more than one FRED series — the collector can pull an additional series without switching scoring to it. `stg_fred_ppi.sql` filters to exactly one series, named by the var `scoring_ppi_series_id`, before any downstream model sees the data:
+
+```sql
+where observation_date >= '2025-01-01'
+  and series_id = '{{ var("scoring_ppi_series_id") }}'
+```
+
+This is the single point of truth for "which FRED series does scoring use." The alternative — a `series_id` filter repeated in every consumer model — was rejected because it means the same assumption is encoded in five places instead of one; a future model added without remembering the filter would silently reintroduce cross-series contamination. Switching which series scoring uses becomes a one-line var change with no model edits, because every downstream model already assumes (and, with this filter, is guaranteed) a single-series input.
+
+### 7.2 Consumer sites that carry no local filter, and what a second series would have done to each
+
+None of the following files reference `series_id` — they rely entirely on the staging contract:
+
+| File | Mechanism | Failure mode with a second, unfiltered series |
+|---|---|---|
+| `fact_market_signals.sql` (`fred`, `fred_as_of` CTEs) | Two-step as-of join, no `series_id` predicate | **Fan-out.** The final join (`f.reference_month = fa.fred_month`) would match one row per series for the same month, doubling every row in the `final` CTE and every mart built on it. |
+| `mart_price_margin_scores.sql` (`ppi_as_of` CTE) | Same as-of join pattern | **Fan-out**, identical mechanism to `fact_market_signals`. |
+| `mart_shelfrisk_scores.sql` (`ppi_lag_monthly` CTE) | `LAG(ppi_value, 1) OVER (ORDER BY month)`, no `PARTITION BY` | **Cross-series LAG.** With two series interleaved in month order, `LAG` would compare one series' value against the other's — a silently wrong month-over-month delta, not a fan-out. |
+| `int_macro_trend_features.sql` (`ppi_windowed` CTE) | `LAG(ppi_value, 12)` plus two rolling `AVG(...) OVER (ORDER BY month ROWS BETWEEN ...)` windows, no `PARTITION BY` | **Cross-series LAG/window**, same mechanism as `mart_shelfrisk_scores.sql`, higher blast radius: feeds `ppi_trend_direction`, `normalized_ppi_growth_score`, and `ppi_3mo_trend` into `fact_market_signals`, propagating to every downstream mart. |
+
+`mart_confidence_layer.sql`'s FRED freshness line (`MAX(collected_at)`, `COUNT(*)` from `stg_fred_ppi`) and `dashboard/queries.py`'s direct `fred_ppi_raw` read were left untouched — both answer "did the collector run," not a scoring question, and the confidence-layer one inherits the staging fix for free since it already reads through `stg_fred_ppi`.
+
+### 7.3 Guard tests
+
+- **`tests/assert_ppi_series_resolves.sql`** — fails if `stg_fred_ppi` returns zero rows, i.e. `scoring_ppi_series_id` matches nothing in `fred_ppi_raw` (typo, wrong ID, discontinued series, or a collector regression). Proven: pointing the var at a nonexistent series ID produced FAIL 1; restoring the real ID produced PASS.
+- **`tests/assert_ppi_series_coverage.sql`** — fails if `stg_fred_ppi` has fewer than `min_ppi_monthly_rows` (= **13**) monthly rows. Proven: overriding the threshold to 20 against the live 16-row table produced FAIL 1; the real threshold of 13 produced PASS.
+- **N = 13, reasoning:** `int_macro_trend_features.sql`'s `ppi_yoy_value = LAG(ppi_value, 12)` needs 13 rows of history (12 preceding plus the current row) for even the most recent month to produce a non-null year-over-year comparison. Below 13, that entire feature is unconditionally NULL for every row — the most demanding requirement of any current consumer (LAG 1/3/6 in `mart_price_margin_scores.sql` need far fewer rows).
+- **Current headroom:** 16 rows live against a floor of 13 — 3 months of slack. This widens by one every month the collector's 24-month rolling pull advances without the series being discontinued or the pull window shrinking; it does not widen on its own without continued collection.
+- **Rejected guard: `count(distinct series_id) > 1`.** This was the first design considered and discarded — once the staging `WHERE series_id = ...` clause exists, `stg_fred_ppi` can never expose more than one series by construction, so this test would assert exactly what the filter already guarantees and could never fail. It tests the mechanism's own tautology, not a real failure mode.
+- **`tests/assert_fred_ppi_raw_no_duplicate_months.sql`** — fails if `fred_ppi_raw` (the source, not `stg_fred_ppi`) has more than one row for the same `(series_id, observation_date)`. Same "test the thing that can actually change" reasoning as the rejected guard above: `stg_fred_ppi` now dedupes via `QUALIFY ROW_NUMBER() OVER (PARTITION BY series_id, observation_date ORDER BY collected_at DESC) = 1`, so testing the model itself would be circular — the `QUALIFY` guarantees it can never fail there. Testing the raw source instead catches a real regression (e.g. `_upload` switching from `WRITE_TRUNCATE` to `WRITE_APPEND`, or gaining a partition decorator) at the point where it would first appear. Proven: temporarily changing the test's own comparison to `having count(*) >= 1` (matching every existing row, since duplicates don't currently exist in live data) produced FAIL 24; reverting to `> 1` produced PASS.
+- **Why dedup was added even though today's collector can't produce duplicates:** `_upload` (`collect_apis.py`) uses `WRITE_TRUNCATE` against an undecorated destination, replacing the whole `fred_ppi_raw` table on every call rather than appending — confirmed live: 24 rows, 24 distinct `(series_id, observation_date)` pairs, one `collected_at` batch. So the specific risk of weekly re-collection silently duplicating rows does not occur under the current write pattern. The `QUALIFY` and this test exist as defense-in-depth against that write pattern changing in the future without `stg_fred_ppi` being revisited.
+
+### 7.4 The series finding
+
+`PCU42440042440012` — the series currently in use — is **"PPI by Industry: Grocery and Related Product Merchant Wholesalers: Wholesaling of Packaged Frozen and Canned Foods."** This is a **wholesale trade index measuring distributor gross margins on one packaged-food product line**, not an input-cost index. It is currently applied as a cost proxy across all 10 TrendShelf categories, and feeds `overall_margin_risk_score` at a 0.40 weight via `margin_pressure_proxy_score`.
+
+The intended replacement is `PCU311311` (Food Manufacturing) — a producer-side cost index, not a wholesale-margin index. That switch is **not made in this commit or in commit `44afed8`**: `PCU311311` collection is added to the raw pipeline separately, and `scoring_ppi_series_id` stays pointed at `PCU42440042440012` until a deliberate later switch. The fix for the series-identity problem itself remains pending.
+
+### 7.5 Standing rule
+
+Check any FRED series' own page (title, breadcrumb category, units) before using it as an input to a model. FRED's breadcrumb path **"Industry Based > Wholesale Trade"** means the series measures trade margins, not the prices or costs a wholesale-trade series' name might suggest at a glance. This applies to every FRED series considered for TrendShelf going forward, not only PPI.

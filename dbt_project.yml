@@ -43,6 +43,11 @@ vars:
   expand_readiness_threshold:        80
   expand_confidence_threshold:       70
   expand_margin_threshold:           70
+  # A genuine margin squeeze at/above this blocks an expansion recommendation (PITCH NOW /
+  # PREPARE PITCH / MONITOR AND PREPARE) — same threshold as the FIX MARGINS gate itself, so
+  # a real squeeze can never be silently dropped by a higher-priority readiness/risk gate.
+  # See docs/threshold_decisions.md #7.11.
+  expansion_margin_fix_threshold:    70
   # Action routing gates — externalized for reproducibility; tunable as data accumulates
   margin_pressure_avoid_threshold:   65    # Raise Price: block if margin pressure exceeds this
   pricing_power_hold_threshold:      70    # Hold Premium: minimum pricing power score required

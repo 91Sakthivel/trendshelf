@@ -217,17 +217,23 @@ select
     )                                                as retailer_pitch_priority,
 
     -- Cascade action logic (evaluated top-to-bottom, first match wins)
+    -- Gates 1-3 carry a margin guard so a genuine squeeze (>= expansion_margin_fix_threshold)
+    -- can never be silently dropped by a readiness/risk gate firing first — it falls through
+    -- to FIX MARGINS instead. See docs/threshold_decisions.md #7.11.
     CASE
         WHEN expansion_readiness_score >= 70
          AND overall_confidence_score  >= 60
+         AND margin_pressure_proxy_score < {{ var('expansion_margin_fix_threshold') }}
             THEN 'PITCH NOW: High readiness and confident data — present expansion business case to buyer'
 
         WHEN expansion_readiness_score >= 55
          AND risk_level = 'LOW'
+         AND margin_pressure_proxy_score < {{ var('expansion_margin_fix_threshold') }}
             THEN 'PREPARE PITCH: Good readiness with low risk — finalise sell-in deck and request buyer meeting'
 
         WHEN expansion_readiness_score >= 55
          AND risk_level = 'MEDIUM'
+         AND margin_pressure_proxy_score < {{ var('expansion_margin_fix_threshold') }}
             THEN 'MONITOR AND PREPARE: Readiness is good but some risk flags — address shelf gaps before pitching'
 
         WHEN demand_decay_risk > 60
@@ -239,7 +245,7 @@ select
         WHEN overall_confidence_score < 40
             THEN 'COLLECT MORE DATA: Low confidence in signals — refresh all API sources and re-score'
 
-        WHEN margin_pressure_proxy_score >= 70
+        WHEN margin_pressure_proxy_score >= {{ var('expansion_margin_fix_threshold') }}
             THEN 'FIX MARGINS: Shelf price has not kept pace with rising category input costs (inferred from industry price indices, not observed supplier costs) — review cost position before expanding.'
 
         WHEN expansion_readiness_score >= 40

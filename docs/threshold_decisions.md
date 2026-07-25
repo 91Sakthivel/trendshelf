@@ -308,4 +308,39 @@ Both declared in `schema.yml` with `not_null` tests. A new CASE branch, `WHEN NO
 | `recommended_price_action × reliability` | incl. Avoid Discount×High 19, Review Price Reduction×High 1 | Avoid Discount×High **0**, Review Price Reduction **0** (all levels); Monitor×High 165→184 |
 | Invariant (Review Price Reduction × Low) | 0 | 0 |
 
+### 7.10 Expansion cascade: a genuine margin squeeze must not be silently dropped by a pitch recommendation
+
+**The defect (pre-existing, not introduced by any prior commit in this log).** `mart_expansion_readiness.sql`'s action cascade evaluates `PITCH NOW` / `PREPARE PITCH` / `MONITOR AND PREPARE` (gates 1-3, keyed on `expansion_readiness_score` and `risk_level`) *before* the `FIX MARGINS` gate (`margin_pressure_proxy_score >= 70`, gate 7). Any row whose readiness/risk profile satisfied gates 1-3 got a pitch recommendation with no mention of margin, regardless of how severe `margin_pressure_proxy_score` was.
+
+**How big this was — measured at a clean rebuild of `42360a4`.** Both this fix and the confidence-freshness fix (§7.11) were stashed out of the working tree, `dbt run --full-refresh` rebuilt every table from that exact commit, and the baseline was confirmed genuine before trusting it: `overall_confidence_score` avg = 87.70 (not the freshness-fix's ~90) and the freshness sub-score column was still named `data_freshness_score` (not yet renamed) — proving no other pending change was contaminating the measurement. (An earlier attempt at this same measurement was taken without re-running `dbt run` after stashing, so it read a stale, freshness-tainted table; that mistake was caught and this section reflects the corrected, actually-rebuilt numbers.)
+
+```
+Of 129 rows with margin_pressure_proxy_score >= 70 (all genuine squeezes, post-§7.9):
+  FIX MARGINS           83   (gate fires correctly)
+  PREPARE PITCH         34   (squeeze silently dropped — gate 2)
+  MONITOR AND PREPARE   12   (squeeze silently dropped — gate 3)
+  PITCH NOW               0
+```
+**46 of 129 rows (35.7%)** — over a third of every genuine maximal margin squeeze in the table — were recommended for expansion (`PREPARE PITCH` or `MONITOR AND PREPARE`) with the margin problem never surfaced.
+
+**Fix: Option (ii) — margin guard on gates 1-3, not a reorder.** Reordering (moving `FIX MARGINS` earlier) would have forced an unscoped decision about its priority relative to `DEFEND FIRST` / `REMEDIATE RISK` / `COLLECT MORE DATA`, none of which were part of this defect. Instead, `margin_pressure_proxy_score < {{ var('expansion_margin_fix_threshold') }}` was added as an additional `AND` condition to gates 1, 2, and 3; a row that fails the guard falls through the cascade exactly as it would have if gates 1-3 didn't exist, reaching whichever gate is next in the existing, unchanged order.
+
+**New var:** `expansion_margin_fix_threshold: 70` (`dbt_project.yml`) — there was no existing var to reuse; `margin_pressure_proxy_score >= 70` at the `FIX MARGINS` gate was a hardcoded literal. The new var now feeds **both** the three guards and the `FIX MARGINS` gate itself (which had its own hardcoded `70` replaced), so the two can never drift apart — single point of truth, same discipline as `ppi_deadband_pct`.
+
+**This is a deliberate business-logic decision, not a cosmetic rename:** a real margin squeeze at or above this threshold now unconditionally blocks an expansion recommendation. A store/category the model itself scores as having maximal margin pressure will never again be told to prepare a buyer pitch without that pressure being surfaced first.
+
+**Verification — genuinely measured, not reconciled on paper.** With the true pre-fix baseline confirmed (above), this fix alone was unstashed and rebuilt (`dbt run --full-refresh`, freshness still stashed):
+
+| | Before (true `42360a4`) | After (this fix alone) |
+|---|---|---|
+| `FIX MARGINS` | 83 | **129** |
+| `PREPARE PITCH` | 146 | **112** |
+| `MONITOR AND PREPARE` | 96 | **84** |
+| `BUILD CASE` | 75 | 75 (unchanged) |
+| margin≥70 → `FIX MARGINS` | 83/129 (64%) | **129/129 (100%)** |
+
+All 129 rows with `margin_pressure_proxy_score >= 70` land on `FIX MARGINS` after the fix — zero diverted to `DEFEND FIRST`/`REMEDIATE RISK`/`COLLECT MORE DATA`, confirming the guard produces exactly the intended fall-through with no unexpected interaction. `recommended_price_action × price_gap_reliability` and `mart_action_queue`'s `action_type` counts are unchanged (this is an expansion-cascade-only fix). Invariant (Review Price Reduction × Low reliability) = 0. `dbt run --full-refresh`: 24/24. `dbt test`: 145/146 pass, 0 errors, same pre-existing unrelated warning; all 5 guard tests PASS.
+
+**How this was found:** surfaced while tracing the confidence-freshness change (§7.11) — that change alone moved 5 boundary rows from `FIX MARGINS` into `PREPARE PITCH`, which led to measuring the full pre-existing defect rather than just the 5-row slice. §7.11 is committed on top of this fix, not bundled with it, so each is independently verifiable.
+
 `margin_pressure_proxy_score`'s average dropped 15.0 points and `overall_margin_risk_score`'s dropped 6.0 points — both fall almost exactly out of the 200 artifact rows moving from 80 to 50 (200 × 30-point drop × 0.40 weight ÷ 400 rows = 6.0), confirming the shift traces entirely to removing the artifact, not to any change in genuinely-evidenced rows (the 129 real squeeze rows and 71 real cost-rising rows kept their exact scores). The expansion-readiness and pricing-intelligence movements are downstream of that same correction.

@@ -43,6 +43,12 @@ vars:
   expand_readiness_threshold:        80
   expand_confidence_threshold:       70
   expand_margin_threshold:           70
+  # PITCH's floor (mart_action_queue.sql) and MONITOR's ceiling for the same score were two
+  # independent hardcoded 65 literals — change one, miss the other, rows silently reroute
+  # between the two actions. Single var now feeds both sites. Guarded by
+  # tests/assert_pitch_readiness_floor_below_ceiling.sql (fails if this is >= expand_readiness_
+  # threshold, which would silently zero out the PITCH rule). See docs/threshold_decisions.md #7.15.
+  pitch_readiness_floor:             65
   # A genuine margin squeeze at/above this blocks an expansion recommendation (PITCH NOW /
   # PREPARE PITCH / MONITOR AND PREPARE) — same threshold as the FIX MARGINS gate itself, so
   # a real squeeze can never be silently dropped by a higher-priority readiness/risk gate.

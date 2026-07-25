@@ -224,7 +224,9 @@ action_rows as (
             WHEN competitive_threat_risk > 70
                 THEN 'DEFEND'
             -- 4. PITCH: good readiness window with a confirmed demand gap
-            WHEN expansion_readiness_score BETWEEN 65 AND {{ var('expand_readiness_threshold') }} AND overall_demand_gap_score > 60
+            -- pitch_readiness_floor (65) is the same var used by MONITOR's ceiling below —
+            -- see docs/threshold_decisions.md #7.15.
+            WHEN expansion_readiness_score BETWEEN {{ var('pitch_readiness_floor') }} AND {{ var('expand_readiness_threshold') }} AND overall_demand_gap_score > 60
                 THEN 'PITCH'
             -- 5. REPRICE: overpriced vs CPI benchmark while demand gap exists
             WHEN price_position_score > 70 AND overall_demand_gap_score > 50
@@ -233,8 +235,10 @@ action_rows as (
             WHEN promo_risk_score > 70
                 THEN 'CUTPROMO'
             -- 7. MONITOR: data is solid but no threshold met — check monthly
+            -- Same pitch_readiness_floor var as PITCH's floor above — must stay in sync
+            -- so rows can't fall into a gap between the two actions. See #7.15.
             WHEN overall_confidence_score >= 60
-             AND expansion_readiness_score < 65
+             AND expansion_readiness_score < {{ var('pitch_readiness_floor') }}
                 THEN 'MONITOR'
             -- 8. INVESTIGATE: default — no condition fired above
             ELSE 'INVESTIGATE'

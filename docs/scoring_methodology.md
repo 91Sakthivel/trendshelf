@@ -66,7 +66,7 @@ Scores how much to trust each row's analysis. Combines four components.
 overall_confidence_score =
     data_completeness_score         × 0.30
   + signal_agreement_score          × 0.25
-  + data_freshness_score            × 0.20
+  + collection_recency_score        × 0.20
   + row_level_source_coverage_score × 0.25
 ```
 
@@ -76,7 +76,7 @@ overall_confidence_score =
 |-----------|--------|-----------|
 | `data_completeness_score` | 30% | Source presence is the prerequisite for any analysis. 5 sources × 20 pts each. |
 | `signal_agreement_score` | 25% | Signals pointing in different directions reduce confidence that the composite score is correct. |
-| `data_freshness_score` | 20% | Stale data degrades signal quality. Kroger data weighted highest (25%) within freshness; SerpAPI lowest (15%) because it is a shopping-level proxy. |
+| `collection_recency_score` | 20% | Stale data degrades signal quality — for the 4 actively-refreshed sources. Kroger weighted highest (31.25%) within this component; SerpAPI lowest (18.75%) because it is a shopping-level proxy. Google Trends is excluded: it's a deliberate one-time historical baseline (`COLLECT_GOOGLE_TRENDS` off by design), not a source that should ever look "fresh" — scoring it as stale would permanently dock confidence for a design choice. Trends still counts toward `data_completeness_score` and `row_level_source_coverage_score`. |
 | `row_level_source_coverage_score` | 25% | Kroger anchors the retail price (35 pts), Trends provides consumer intent (25 pts), FRED+BLS together provide macro context (25 pts), SerpAPI provides competitive context (15 pts). |
 
 **Why Kroger gets the highest single-source weight (35 pts):** It is the retail anchor — without a shelf price there is no fact row. Every other score depends on it.

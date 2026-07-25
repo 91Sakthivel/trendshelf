@@ -308,6 +308,8 @@ Both declared in `schema.yml` with `not_null` tests. A new CASE branch, `WHEN NO
 | `recommended_price_action × reliability` | incl. Avoid Discount×High 19, Review Price Reduction×High 1 | Avoid Discount×High **0**, Review Price Reduction **0** (all levels); Monitor×High 165→184 |
 | Invariant (Review Price Reduction × Low) | 0 | 0 |
 
+`margin_pressure_proxy_score`'s average dropped 15.0 points and `overall_margin_risk_score`'s dropped 6.0 points — both fall almost exactly out of the 200 artifact rows moving from 80 to 50 (200 × 30-point drop × 0.40 weight ÷ 400 rows = 6.0), confirming the shift traces entirely to removing the artifact, not to any change in genuinely-evidenced rows (the 129 real squeeze rows and 71 real cost-rising rows kept their exact scores). The expansion-readiness and pricing-intelligence movements are downstream of that same correction.
+
 ### 7.10 Expansion cascade: a genuine margin squeeze must not be silently dropped by a pitch recommendation
 
 **The defect (pre-existing, not introduced by any prior commit in this log).** `mart_expansion_readiness.sql`'s action cascade evaluates `PITCH NOW` / `PREPARE PITCH` / `MONITOR AND PREPARE` (gates 1-3, keyed on `expansion_readiness_score` and `risk_level`) *before* the `FIX MARGINS` gate (`margin_pressure_proxy_score >= 70`, gate 7). Any row whose readiness/risk profile satisfied gates 1-3 got a pitch recommendation with no mention of margin, regardless of how severe `margin_pressure_proxy_score` was.
@@ -343,4 +345,26 @@ All 129 rows with `margin_pressure_proxy_score >= 70` land on `FIX MARGINS` afte
 
 **How this was found:** surfaced while tracing the confidence-freshness change (§7.11) — that change alone moved 5 boundary rows from `FIX MARGINS` into `PREPARE PITCH`, which led to measuring the full pre-existing defect rather than just the 5-row slice. §7.11 is committed on top of this fix, not bundled with it, so each is independently verifiable.
 
-`margin_pressure_proxy_score`'s average dropped 15.0 points and `overall_margin_risk_score`'s dropped 6.0 points — both fall almost exactly out of the 200 artifact rows moving from 80 to 50 (200 × 30-point drop × 0.40 weight ÷ 400 rows = 6.0), confirming the shift traces entirely to removing the artifact, not to any change in genuinely-evidenced rows (the 129 real squeeze rows and 71 real cost-rising rows kept their exact scores). The expansion-readiness and pricing-intelligence movements are downstream of that same correction.
+### 7.11 Confidence freshness: drop the frozen Google Trends source, rename `data_freshness_score` → `collection_recency_score`
+
+**(a) Google Trends removed from the freshness calc.** `COLLECT_GOOGLE_TRENDS` is off by design — Trends is a deliberate one-time historical baseline (`config.py`), not a source that ever refreshes. Scoring it as "stale" permanently docked `data_freshness_score` for a design choice, and made `overall_confidence_score` erode on every `dbt run` from wall-clock passage alone, independent of any real data quality change. Trends' 0.20 weight was removed from the freshness formula and redistributed across the four actively-refreshed sources, scaling their existing ratios (0.25 : 0.20 : 0.20 : 0.15) by 1/0.80 to refill the vacated weight: **Kroger 0.3125, FRED 0.25, BLS 0.25, SerpAPI 0.1875** (sum 1.00). Trends still counts fully toward `data_completeness_score` and `row_level_source_coverage_score` — both read `avg_search_interest`, not collection timestamp, so removing Trends from the recency calc doesn't touch either.
+
+**(b) Renamed `data_freshness_score` → `collection_recency_score`**, everywhere it appeared: the producer (`mart_confidence_layer.sql`, formula + comments), the composite formula, the passthrough in `mart_expansion_readiness.sql`, `models/schema.yml`'s description prose, and `docs/scoring_methodology.md`'s formula and component table. The old name implied it measures how current the data's *content* is; it actually measures how recently each source was *collected* (`MAX(collected_at)`, not `observation_date`) — a real distinction, since a genuine content refresh (e.g. FRED's April→June move, §7.6) doesn't move this score at all unless the *collection event itself* was also recent. Left untouched: the two dated notebooks (`trendshelf_eda.ipynb`, `trendshelf_eda_executed.ipynb`, per the standing rule that dated records keep their original wording) and `dashboard/queries.py`'s unrelated `get_data_freshness()` — a different function entirely, reading raw `collected_at` per source table directly, never referencing the mart column being renamed here.
+
+**(c) Logged as a future item, not fixed here:** true data-*currency* scoring would read `observation_date`-class columns (or `ppi_signal_stale`-style as-of gaps) instead of `collected_at`, so a genuinely fresh calendar month scores as fresh regardless of when it happened to be collected. That's a larger, cross-cutting change (FRED/BLS both have real, permanent publishing lags — §7.6 — so "content currency" would need its own staleness bands, not a copy of the collection-recency ones) and is deliberately deferred, not attempted in this commit.
+
+**Verification — genuinely measured, not reconciled on paper.** Both this fix and §7.10 were stashed, `dbt run --full-refresh` established the true `42360a4` baseline (`overall_confidence_score` avg confirmed 87.70), §7.10 alone was unstashed/rebuilt/committed first, then this fix was unstashed on top of `d50252a` and rebuilt with another full refresh:
+
+| | Before (`d50252a`, §7.10 applied, freshness not yet) | After (this fix applied) |
+|---|---|---|
+| `collection_recency_score` (constant) | 78.5 | **90.63** |
+| `overall_confidence_score` min/max/avg | 86.95 / 91.95 / 87.70 | 89.38 / 94.38 / **90.13** |
+| `FIX MARGINS` | 129 | **129 (unchanged)** |
+| `PREPARE PITCH` | 112 | 112 (unchanged) |
+| `MONITOR AND PREPARE` | 84 | 89 |
+| `BUILD CASE` | 75 | 70 |
+| margin≥70 → `FIX MARGINS` | 129/129 (100%) | **129/129 (100%)** |
+
+**The whole point of landing §7.10 first:** the confidence rise (+2.43 avg, uniform across all rows) pushes `expansion_readiness_score` up by ~0.36 uniformly (via its `overall_confidence_score × 0.15` term) — enough to move the same 5 boundary rows identified in the original trace (`margin_pressure_proxy_score = 80`, `risk_level = LOW`, `old_readiness` 54.66–54.94) across the `>= 55` gate. Queried directly: **all of them resolve to `FIX MARGINS`, none to `PREPARE PITCH`** — §7.10's guard holds regardless of the confidence rise, exactly as designed. `FIX MARGINS`'s count is unchanged at 129 (100% of genuine squeezes, unaffected by freshness). The remaining movement — `BUILD CASE` 75→70, `MONITOR AND PREPARE` 84→89 — is the separate, benign `risk_level = MEDIUM` boundary crossing already characterized in the original trace (all `margin_pressure_proxy_score < 70` by cascade construction, so none of these touch the margin guard).
+
+`recommended_price_action × price_gap_reliability` and `action_type` unchanged. Invariant (Review Price Reduction × Low reliability) = 0. `dbt run --full-refresh`: 24/24. `dbt test`: 145/146 pass, 0 errors, same pre-existing unrelated warning; all 5 guard tests PASS. Grep confirms zero stray `data_freshness_score` outside the two dated notebooks.

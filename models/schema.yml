@@ -237,7 +237,7 @@ models:
   - name: mart_confidence_layer
     description: >
       Data quality and signal confidence. Grain: signal_id = reference_month × category × store.
-      Composite of completeness, agreement, freshness, and row-level coverage.
+      Composite of completeness, agreement, collection recency, and row-level coverage.
     columns:
       - name: signal_id
         description: Surrogate key matching fact_market_signals

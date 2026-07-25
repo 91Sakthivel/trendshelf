@@ -10,11 +10,25 @@
 
   5 expected sources: Google Trends, Kroger, FRED PPI, BLS CPI, SerpAPI.
 
-  Confidence formula (v3):
+  Confidence formula (v4):
     data_completeness_score         × 0.30  — binary source presence (5×20 pts)
     signal_agreement_score          × 0.25  — do signals tell a consistent story?
-    data_freshness_score            × 0.20  — weighted staleness of each source
+    collection_recency_score        × 0.20  — weighted collection recency of 4 actively-
+                                               refreshed sources (Kroger, FRED, BLS, SerpAPI).
+                                               Google Trends is excluded: COLLECT_GOOGLE_TRENDS
+                                               is off by design (one-time historical baseline,
+                                               see config.py), so scoring it as "stale" would
+                                               permanently dock this score for a deliberate
+                                               choice, not a data problem. Trends still counts
+                                               toward data_completeness_score and row_level_
+                                               source_coverage_score (both read avg_search_
+                                               interest, not collection timestamp).
     row_level_source_coverage_score × 0.25  — weighted per-row source coverage
+
+  Note: this score measures how recently each source was COLLECTED, not how current the
+  data's own content is (e.g. FRED's observation_date vs its collected_at). A true data-
+  currency score would read observation_date-class columns instead — a larger, deliberately
+  deferred change (see docs/threshold_decisions.md #7.10).
 
   Confidence levels:
     HIGH   >= 75
@@ -182,44 +196,40 @@ scored as (
             END
         ))                                              as signal_agreement_score,
 
-        -- ── 3. Data Freshness Score ───────────────────────────────────────────
-        -- 5-source weighted freshness. Weights: Kroger 25% | Trends 20% | FRED 20% | BLS 20% | SerpAPI 15%
+        -- ── 3. Collection Recency Score ───────────────────────────────────────
+        -- 4-source weighted collection recency (Google Trends excluded — see header note).
+        -- Weights: Kroger 0.3125 | FRED 0.25 | BLS 0.25 | SerpAPI 0.1875 (sum 1.00), the
+        -- prior 4-source ratios (0.25 : 0.20 : 0.20 : 0.15) scaled by 1/0.80 to absorb
+        -- Trends' vacated 0.20. See docs/threshold_decisions.md #7.10.
         LEAST(100, GREATEST(0,
             CASE
                 WHEN kroger_last_collected IS NULL THEN 0
                 WHEN TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), kroger_last_collected, HOUR) <= 48   THEN 100
                 WHEN TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), kroger_last_collected, HOUR) <= 168  THEN 70
                 ELSE 30
-            END * 0.25 +
-
-            CASE
-                WHEN trends_last_collected IS NULL THEN 0
-                WHEN TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), trends_last_collected, HOUR) <= 336  THEN 100
-                WHEN TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), trends_last_collected, HOUR) <= 720  THEN 70
-                ELSE 30
-            END * 0.20 +
+            END * 0.3125 +
 
             CASE
                 WHEN fred_last_collected IS NULL THEN 0
                 WHEN TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), fred_last_collected, HOUR) <= 1080   THEN 100
                 WHEN TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), fred_last_collected, HOUR) <= 2160   THEN 70
                 ELSE 30
-            END * 0.20 +
+            END * 0.25 +
 
             CASE
                 WHEN bls_last_collected IS NULL THEN 0
                 WHEN TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), bls_last_collected, HOUR) <= 1080    THEN 100
                 WHEN TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), bls_last_collected, HOUR) <= 2160    THEN 70
                 ELSE 30
-            END * 0.20 +
+            END * 0.25 +
 
             CASE
                 WHEN serpapi_last_collected IS NULL THEN 0
                 WHEN TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), serpapi_last_collected, HOUR) <= 336 THEN 100
                 WHEN TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), serpapi_last_collected, HOUR) <= 720 THEN 70
                 ELSE 30
-            END * 0.15
-        ))                                              as data_freshness_score,
+            END * 0.1875
+        ))                                              as collection_recency_score,
 
         -- ── 4. Row-Level Source Coverage Score ────────────────────────────────
         -- Weighted by data value to the retail prediction model:
@@ -288,15 +298,15 @@ final as (
 
         ROUND(data_completeness_score,          2)  as data_completeness_score,
         ROUND(signal_agreement_score,           2)  as signal_agreement_score,
-        ROUND(data_freshness_score,             2)  as data_freshness_score,
+        ROUND(collection_recency_score,         2)  as collection_recency_score,
         ROUND(row_level_source_coverage_score,  2)  as row_level_source_coverage_score,
         source_count,
 
-        -- v3 formula: 4 weighted components
+        -- v4 formula: 4 weighted components
         ROUND(LEAST(100, GREATEST(0,
             data_completeness_score         * 0.30 +
             signal_agreement_score          * 0.25 +
-            data_freshness_score            * 0.20 +
+            collection_recency_score        * 0.20 +
             row_level_source_coverage_score * 0.25
         )), 2)                                      as overall_confidence_score,
 

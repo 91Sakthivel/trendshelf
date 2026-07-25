@@ -56,7 +56,7 @@ confidence as (
         signal_id,
         data_completeness_score,
         signal_agreement_score,
-        data_freshness_score,
+        collection_recency_score,
         source_count,
         overall_confidence_score,
         confidence_level,

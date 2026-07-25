@@ -82,6 +82,14 @@ vars:
   # smallest observed moves (0.0248%, 0.0333%) and the next (0.2002%); 0.1 sits centered in
   # that gap. See docs/threshold_decisions.md #7.8.
   ppi_deadband_pct:                   0.1
+  # Scaling parameter for margin_pressure_proxy_score's "healthy" (ELSE) branch: how many
+  # points to subtract from 30 per 1% of MoM retail price rise. This is a CONVENTION, not a
+  # data-discovered threshold like ppi_deadband_pct's natural gap: it anchors the median
+  # move of the live rising-price population (n=71, single month, 2.01%) to the branch's
+  # midpoint (30 - 2.01*7.5 ≈ 15). The branch itself has ZERO live rows as of #7.13 — this
+  # value is unvalidated against real branch output and should be revisited once the branch
+  # actually populates and more months of data exist. See docs/threshold_decisions.md #7.13.
+  retail_healthy_pct_divisor:         7.5
   # confidence smoothing (Laplace-style shrinkage toward zero)
   confidence_smoothing_k:            15.0
   # demand slope state (t-stat-like ratio threshold)

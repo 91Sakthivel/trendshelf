@@ -176,6 +176,13 @@ base as (
             d.ppi_value - COALESCE(pl.ppi_1m_ago, d.ppi_value),
             NULLIF(COALESCE(pl.ppi_1m_ago, d.ppi_value), 0)
         ) * 100                                                as ppi_mom_pct_change,
+        -- Retail MoM %% change, computed once here (same pattern as ppi_mom_pct_change)
+        -- so the ELSE/healthy branch in `scored` reads a percent, not raw dollars — a $1
+        -- rise on a $2 item and a $40 item are no longer scored identically. See #7.13.
+        SAFE_DIVIDE(
+            d.retail_price - COALESCE(rl.retail_price_1m_ago, d.retail_price),
+            NULLIF(COALESCE(rl.retail_price_1m_ago, d.retail_price), 0)
+        ) * 100                                                as retail_mom_pct_change,
         cl.cpi_1m_ago,
         cl.cpi_3m_ago,
 
@@ -253,11 +260,12 @@ scored as (
                 WHEN ppi_mom_pct_change > {{ var('ppi_deadband_pct') }}
                     THEN 40  -- cost rising; retail price holding for now
                 ELSE
-                    -- Healthy: price rising faster than costs
-                    GREATEST(0, 30 - SAFE_DIVIDE(
-                        retail_price - retail_price_1m_ago,
-                        5.0
-                    ))
+                    -- Healthy: price rising faster than costs. Percent-based (retail_mom_pct_change),
+                    -- not raw dollars, so items at different price points aren't scored identically.
+                    -- retail_healthy_pct_divisor (7.5) is a CONVENTION anchoring the median rising-
+                    -- price move to the branch midpoint, not a data-discovered threshold — see
+                    -- docs/threshold_decisions.md #7.13 for the derivation and its caveats.
+                    GREATEST(0, 30 - retail_mom_pct_change * {{ var('retail_healthy_pct_divisor') }})
             END
         ))                                          as margin_pressure_proxy_score,
 

@@ -156,6 +156,18 @@ base as (
         pl.ppi_3m_ago,
         pl.ppi_6m_ago,
         pa.ppi_signal_stale,
+        -- Whether a real prior-month comparison is even possible. FALSE for a store×
+        -- category's first observed month (retail) or the very start of the FRED series'
+        -- own history (PPI) — distinct from ppi_signal_stale, which is about a resolved
+        -- PPI reading being too OLD, not about no prior reading existing at all. Read by
+        -- the unknown-trend branch in `scored`, guarded by not_null tests in schema.yml.
+        rl.retail_price_1m_ago IS NOT NULL                     as has_prior_month_price,
+        pl.ppi_1m_ago IS NOT NULL                               as has_prior_month_ppi,
+        -- Retail price direction vs. one month ago, computed once here (no COALESCE-to-
+        -- self): NULL when retail_price_1m_ago is NULL, which is fine because the CASE in
+        -- `scored` routes has_prior_month_price = FALSE rows to the unknown branch before
+        -- this column is ever consulted.
+        d.retail_price <= rl.retail_price_1m_ago                as retail_price_declining,
         -- Month-over-month PPI % change, computed once here so both the branch-80 and
         -- branch-40 tests in `scored` read the same value instead of duplicating the
         -- expression. Same null-handling as the old inline `>` comparison: a NULL
@@ -227,20 +239,23 @@ scored as (
         -- = margin being squeezed. ppi_mom_pct_change > var('ppi_deadband_pct') treats
         -- moves at or below the deadband as flat, not "rising" (see docs/threshold_
         -- decisions.md #7.8 for the natural-gap derivation of the 0.1 threshold).
+        -- 50 = "trend unresolved" when either side has no prior-month reading to compare
+        -- against — neutral, not a guess at compression or health (see #7.9).
         LEAST(100, GREATEST(0,
             CASE
                 WHEN retail_price IS NULL OR ppi_value IS NULL THEN 30
-                WHEN retail_price <= COALESCE(retail_price_1m_ago, retail_price)
+                WHEN NOT has_prior_month_price OR NOT has_prior_month_ppi THEN 50
+                WHEN retail_price_declining
                  AND ppi_mom_pct_change > {{ var('ppi_deadband_pct') }}
                     THEN 80  -- classic margin squeeze
-                WHEN retail_price <= COALESCE(retail_price_1m_ago, retail_price)
+                WHEN retail_price_declining
                     THEN 55  -- price compression only
                 WHEN ppi_mom_pct_change > {{ var('ppi_deadband_pct') }}
                     THEN 40  -- cost rising; retail price holding for now
                 ELSE
                     -- Healthy: price rising faster than costs
                     GREATEST(0, 30 - SAFE_DIVIDE(
-                        COALESCE(retail_price, 0) - COALESCE(retail_price_1m_ago, retail_price, 0),
+                        retail_price - retail_price_1m_ago,
                         5.0
                     ))
             END
@@ -281,6 +296,8 @@ scored as (
         retail_price_1m_ago,
         ppi_1m_ago,
         ppi_signal_stale,
+        has_prior_month_price,
+        has_prior_month_ppi,
         overall_demand_gap_score,
         avg_search_interest,
 
@@ -333,6 +350,8 @@ select
     retail_price_1m_ago,
     ppi_1m_ago,
     ppi_signal_stale,
+    has_prior_month_price,
+    has_prior_month_ppi,
     overall_demand_gap_score,
     avg_search_interest,
 

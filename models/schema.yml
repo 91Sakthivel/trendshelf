@@ -225,6 +225,14 @@ models:
         description: TRUE when the latest available FRED PPI month is more than max_ppi_staleness_months months behind this row's reference_month — PPI trend treated as unknown/unresolved rather than carried forward stale.
         tests:
           - not_null
+      - name: has_prior_month_price
+        description: TRUE when this signal_id has a prior-month retail price to compare against — FALSE for a store×category's first observed month, when retail trend is genuinely unknown rather than flat/falling.
+        tests:
+          - not_null
+      - name: has_prior_month_ppi
+        description: TRUE when a prior-month PPI reading exists for the resolved ppi_month — FALSE only at the very start of the FRED series' own history, when PPI trend is genuinely unknown rather than flat/falling.
+        tests:
+          - not_null
 
   - name: mart_confidence_layer
     description: >

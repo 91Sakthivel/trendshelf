@@ -274,3 +274,38 @@ The reason is structural, not series-specific: `mart_demand_gap_scores` currentl
 **Does not make the signal row-specific.** The deadband smooths noise out of the *shared* national reading — it does not change the finding in §7.7 that the panel still moves together on one series-wide PPI value per resolved month. With only two `reference_month` values live today, all 400 rows still inherit the same `ppi_mom_pct_change` (May→June 2026, +0.5063%), which is comfortably above the 0.1% deadband — so at this snapshot the branch-80/40 assignment is unchanged from before the deadband, and correctly so: a genuine +0.51% move should still register as "rising." The deadband's effect is invisible until a future month's shared PPI move happens to fall inside the (0, 0.1%] noise band; §7.7's structural point (that the panel needs more distinct `reference_month` values before the signal becomes row-specific rather than one shared macro reading) is unaffected either way.
 
 **Verification.** Baseline before the edit (post-§7.7 swap, still live at commit `48dd01e`) and after `dbt run`/`dbt test` are identical except for a floating-point last-digit artifact in `store_market_fit_score`'s AVG (39.80660000000001 → 39.80660000000002, 14 decimal places deep — BigQuery float summation order, not a value change). Branch distribution: `BRANCH_80_SQUEEZE` 329 / `BRANCH_40_COST_RISING` 71, unchanged. Invariant (Review Price Reduction × Low reliability) = 0, unchanged. `dbt run`: 24/24. `dbt test`: 143 pass, 0 errors, same pre-existing unrelated warning; `assert_ppi_series_resolves`, `assert_ppi_series_coverage`, `assert_fred_ppi_raw_no_duplicate_months` all PASS.
+
+### 7.9 Unknown-trend rows must not score as declining: `has_prior_month_price` / `has_prior_month_ppi`
+
+`margin_pressure_proxy_score`'s branch predicates used `retail_price <= COALESCE(retail_price_1m_ago, retail_price)` — when `retail_price_1m_ago` is NULL, this compares `retail_price` to itself, which is always TRUE. The same masking existed on the PPI side via `COALESCE(ppi_1m_ago, ppi_value)`. Both silently treated "we have no prior-period reading" as "the price/cost didn't rise" — the same defect class as the pre-deadband PPI masking (§7.8), one level up.
+
+**How big this was.** 200 of 400 rows (50%, the entire `2026-06-01` cohort — the earlier of the two live `reference_month`s, where no prior month exists in the window) had `retail_price_1m_ago IS NULL`. Every one of them was scoring **exactly 80 — maximum "classic margin squeeze"** — purely from the self-comparison, with zero evidence of actual retail price movement. That's half the table's margin-risk signal being manufactured from a data-availability artifact, not a measurement.
+
+**The fix.** Two new boolean columns, computed once in `base`, same pattern as `ppi_signal_stale`:
+- `has_prior_month_price` — `retail_price_1m_ago IS NOT NULL`
+- `has_prior_month_ppi` — `ppi_1m_ago IS NOT NULL`
+
+Both declared in `schema.yml` with `not_null` tests. A new CASE branch, `WHEN NOT has_prior_month_price OR NOT has_prior_month_ppi THEN 50`, sits immediately after the existing data-outage branch (`retail_price IS NULL OR ppi_value IS NULL THEN 30`) and before the four evidenced branches. `retail_price_declining` (`retail_price <= retail_price_1m_ago`, no COALESCE) is computed once in `base` and referenced by both the branch-80 and branch-55 tests — same one-definition discipline as `ppi_mom_pct_change`. The healthy-branch delta formula also dropped its `COALESCE(retail_price_1m_ago, retail_price, 0)` self-mask, since by that point in the CASE a real comparison is guaranteed.
+
+**Why 50, not 55.** "Trend unresolved" needs a value with no directional signal, distinguishable from every evidenced branch (0-30 healthy, 40 mild pressure, 55 compression, 80 squeeze). 50 is the exact midpoint of the 0-100 scale and sits in the one gap no evidenced branch occupies — it cannot read as "leaning healthy" or "leaning risky." 55 was rejected because it asserts an observed compression that didn't happen — reusing it would just relocate the same masking bug from the predicate into the neutral value's choice. The value is hardcoded, matching the existing hardcoded siblings (80/55/40/30) rather than introduced as a new var — thresholds are vars in this codebase, branch scores are not.
+
+**PPI side: added correctness-ahead-of-need, dormant today.** `has_prior_month_ppi` and its half of the unknown-branch condition are live in the deployed CASE, but **0 of 400 rows currently trigger it** (`ppi_1m_ago IS NULL` count = 0, confirmed both before and after this change) — both live `reference_month`s resolve to a PPI month that isn't the first in `stg_fred_ppi`'s own history. Its effect today is provably zero; it closes the same defect on the PPI side before it can ever fire, same reasoning as adding the PPI deadband ahead of a month where it would matter (§7.8).
+
+**Invariant proof is structural, not empirical.** `recommended_price_action = 'Review Price Reduction'` has exactly two producing branches in `mart_pricing_intelligence.sql` (lines 697-712), and both require `price_gap_reliability = 'High'` explicitly — a competitor-data-quality gate computed independently of `margin_pressure_proxy_score`. "Review Price Reduction" under `Low` reliability is therefore impossible by construction, regardless of what this change (or any future change to `margin_pressure_proxy_score`) does. Confirmed empirically too: invariant = 0, before and after.
+
+**Verification.** Baseline taken against the live table before editing (200/400 rows at score 80.0 from the artifact, branch distribution 40.0×71 / 80.0×329). `dbt run`: 24/24. `dbt test`: 145 pass, 0 errors, same pre-existing unrelated warning (144 + 2 new `not_null` tests). All three FRED guards and both new `has_prior_month_*` tests PASS.
+
+| Metric | Before | After |
+|---|---|---|
+| `margin_pressure_proxy_score` branch distribution | 40.0×71, 80.0×329 | 40.0×71, **50.0×200**, 80.0×129 |
+| `margin_pressure_proxy_score` avg | 72.90 | **57.90** |
+| `overall_margin_risk_score` min/max/avg | 29.85 / 61.29 / 50.84 | 29.85 / 56.61 / **44.84** |
+| `store_market_fit_score` min/max/avg | 26.58 / 65.28 / 39.81 | 31.99 / 65.28 / 42.81 |
+| `expansion_readiness_score` min/max/avg | 48.04 / 64.76 / 55.30 | 49.32 / 65.25 / 56.20 |
+| expansion `FIX MARGINS` count | 163 | **83** |
+| expansion `BUILD CASE` / `MONITOR AND PREPARE` / `PREPARE PITCH` | 29 / 82 / 126 | 75 / 96 / 146 |
+| `mart_action_queue` DEFEND / MONITOR | 240 / 560 | 240 / 560 (unchanged) |
+| `recommended_price_action × reliability` | incl. Avoid Discount×High 19, Review Price Reduction×High 1 | Avoid Discount×High **0**, Review Price Reduction **0** (all levels); Monitor×High 165→184 |
+| Invariant (Review Price Reduction × Low) | 0 | 0 |
+
+`margin_pressure_proxy_score`'s average dropped 15.0 points and `overall_margin_risk_score`'s dropped 6.0 points — both fall almost exactly out of the 200 artifact rows moving from 80 to 50 (200 × 30-point drop × 0.40 weight ÷ 400 rows = 6.0), confirming the shift traces entirely to removing the artifact, not to any change in genuinely-evidenced rows (the 129 real squeeze rows and 71 real cost-rising rows kept their exact scores). The expansion-readiness and pricing-intelligence movements are downstream of that same correction.

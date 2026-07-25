@@ -227,15 +227,17 @@ scored as (
         ))                                          as price_position_score,
 
         -- ── 2. Cost Shock Score ───────────────────────────────────────────────
-        -- How much wholesale cost (PPI) moved in the last 3 months.
-        -- High movement = cost volatility = uncertainty in margin planning.
+        -- How much wholesale cost (PPI) has RISEN in the last 3 months — directional,
+        -- not volatility. A falling-cost period is relief, not a shock, and floors to 0
+        -- via the outer GREATEST rather than scoring identically to a rise of the same
+        -- magnitude (the prior ABS() formulation did the latter). See #7.14. NULL-fallback
+        -- caveat (COALESCE .. 10 scoring higher than a confirmed falling-cost 0) logged in
+        -- #7.14, not fixed here — dormant today, same unknown-vs-evidenced class as #7.9/#7.12.
         LEAST(100, GREATEST(0,
             COALESCE(
-                ABS(
-                    SAFE_DIVIDE(
-                        COALESCE(ppi_value, 0) - COALESCE(ppi_3m_ago, ppi_value, 0),
-                        NULLIF(COALESCE(ppi_3m_ago, 100), 0)
-                    )
+                SAFE_DIVIDE(
+                    COALESCE(ppi_value, 0) - COALESCE(ppi_3m_ago, ppi_value, 0),
+                    NULLIF(COALESCE(ppi_3m_ago, 100), 0)
                 ) * 500,   -- scale: 5% PPI move → score of 25; 20% move → score of 100
                 10
             )

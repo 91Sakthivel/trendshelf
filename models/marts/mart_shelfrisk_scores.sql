@@ -63,14 +63,41 @@ retail_price_lag as (
 
 -- ── PPI lag from staging (one row per month — no cross-store cardinality) ─────
 
-ppi_lag_monthly as (
+ppi_lags_stg as (
 
     select
         DATE_TRUNC(observation_date, MONTH)            as reference_month,
+        ppi_value,
         LAG(ppi_value, 1) OVER (
             ORDER BY DATE_TRUNC(observation_date, MONTH)
         )                                              as prev_ppi
     from {{ ref('stg_fred_ppi') }}
+
+),
+
+-- ── Resolve latest available FRED month for each spine month, with a staleness
+--    guard ──────────────────────────────────────────────────────────────────────
+-- Same latest-available-as-of pattern as fact_market_signals.sql's fred_as_of CTE
+-- and mart_price_margin_scores.sql's ppi_as_of CTE. This is now the third copy of
+-- this pattern in the codebase — see docs/threshold_decisions.md #7.12 for a note
+-- on the duplication and where a future shared macro should look.
+-- Previously this model joined ppi_lag_monthly on an EXACT reference_month match,
+-- which silently returned NULL prev_ppi for any spine month FRED hasn't published
+-- yet (e.g. the current month) instead of resolving to the latest available prior
+-- reading. See docs/threshold_decisions.md #7.12.
+
+ppi_as_of as (
+
+    select
+        d.reference_month,
+        CASE
+            WHEN DATE_DIFF(d.reference_month, MAX(pl.reference_month), MONTH)
+                 <= {{ var('max_ppi_staleness_months') }}
+                THEN MAX(pl.reference_month)
+        END                                                      as ppi_month
+    from (select distinct reference_month from demand) d
+    left join ppi_lags_stg pl on pl.reference_month <= d.reference_month
+    group by d.reference_month
 
 ),
 
@@ -118,6 +145,17 @@ base as (
         v.interest_3m_ago,
         rpl.prev_retail_price,
         pl.prev_ppi,
+        -- Whether a real prior-month PPI reading exists at all (distinct from staleness —
+        -- see mart_price_margin_scores.sql's has_prior_month_ppi, #7.9). Guards the self-
+        -- mask COALESCE(prev_ppi, ppi_value) previously produced when prev_ppi was NULL.
+        pl.prev_ppi IS NOT NULL                                as has_prior_month_ppi,
+        -- Month-over-month PPI % change, computed once (same formula/name as
+        -- mart_price_margin_scores.sql) so both competitive_threat_risk predicates below
+        -- read the same value instead of duplicating the expression.
+        SAFE_DIVIDE(
+            d.ppi_value - COALESCE(pl.prev_ppi, d.ppi_value),
+            NULLIF(COALESCE(pl.prev_ppi, d.ppi_value), 0)
+        ) * 100                                                as ppi_mom_pct_change,
 
         c.competitor_avg_price,
         c.competitor_store_count,
@@ -127,7 +165,8 @@ base as (
     left join trend_velocity    v   on d.reference_month = v.reference_month
                                    and d.category_name  = v.category_name
     left join retail_price_lag  rpl on d.signal_id       = rpl.signal_id
-    left join ppi_lag_monthly   pl  on d.reference_month = pl.reference_month
+    left join ppi_as_of         pa  on d.reference_month = pa.reference_month
+    left join ppi_lags_stg      pl  on pa.ppi_month      = pl.reference_month
     left join competitor_monthly c  on d.reference_month = c.reference_month
 
 ),
@@ -215,14 +254,22 @@ scored as (
                                 ) * 100
                             )
                     END
-                -- PROXY: no SerpAPI data; infer from retail vs PPI movement
-                WHEN retail_price IS NULL OR prev_retail_price IS NULL THEN 25
+                -- PROXY: no SerpAPI data; infer from retail vs PPI movement.
+                -- 25 = "trend unresolved" when either retail or PPI history is unknown —
+                -- same neutral sentinel whether the missing evidence is retail-side (no
+                -- prior month) or PPI-side (no prior FRED reading), not a new value per
+                -- axis. See docs/threshold_decisions.md #7.12 for why 25 here, not the
+                -- 50 used in mart_price_margin_scores.sql's #7.9 (different model, different
+                -- branch scale — 25 already sits in this model's own healthy(15)/cost-
+                -- rising(35) gap).
+                WHEN retail_price IS NULL OR prev_retail_price IS NULL OR NOT has_prior_month_ppi
+                    THEN 25
                 WHEN retail_price < prev_retail_price
-                 AND ppi_value    > COALESCE(prev_ppi, ppi_value)
+                 AND ppi_mom_pct_change > {{ var('ppi_deadband_pct') }}
                     THEN 80  -- price cut while input costs rising = competitive pressure
                 WHEN retail_price < prev_retail_price
                     THEN 50  -- price cut without cost pressure = promotional competition
-                WHEN ppi_value > COALESCE(prev_ppi, ppi_value)
+                WHEN ppi_mom_pct_change > {{ var('ppi_deadband_pct') }}
                     THEN 35  -- cost rising but price holding = will need to act soon
                 ELSE 15
             END
@@ -247,6 +294,7 @@ scored as (
         ppi_value,
         cpi_value,
         competitor_avg_price,
+        has_prior_month_ppi,
         -- competitor_price_advantage: positive = Kroger more expensive (bad)
         ROUND(
             SAFE_DIVIDE(
@@ -312,6 +360,7 @@ final as (
         cpi_value,
         competitor_avg_price,
         competitor_price_advantage_pct,
+        has_prior_month_ppi,
         overall_demand_gap_score,
 
         signal_type,

@@ -206,6 +206,10 @@ models:
           - dbt_utils.accepted_range:
               min_value: 0
               max_value: 100
+      - name: has_prior_month_ppi
+        description: TRUE when a prior-month PPI reading exists for the resolved ppi_month — FALSE only at the very start of the FRED series' own history, when PPI trend is genuinely unknown rather than flat/falling.
+        tests:
+          - not_null
 
   - name: mart_price_margin_scores
     description: >

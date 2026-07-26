@@ -86,11 +86,44 @@ jobs:
           bq = bigquery.Client(project=project, credentials=creds)
 
           today = date.today().isoformat()
+          event_name = os.environ.get('GITHUB_EVENT_NAME', '')
+
           for tbl, floor in [('kroger_prices_raw', 8000), ('serpapi_prices_raw', 200)]:
               q = f\"SELECT COUNT(*) c FROM {project}.bronze.{tbl} WHERE DATE(collected_at) = '{today}'\"
               n = list(bq.query(q).result())[0].c
               print(f'{tbl} {today}: {n} rows (floor {floor})')
               assert n >= floor, f'{tbl} thin/missing partition for {today}: {n} < {floor}'
+
+          # ── Coverage checks ────────────────────────────────────────────────────
+          # A total row-count floor alone can pass while several categories/stores are
+          # silently missing entirely (surviving ones make up the volume). These check
+          # DISTINCT coverage instead.
+
+          # SerpAPI: schedule-only. collect_serpapi() has a 6-day per-category cache, so
+          # an off-cadence manual run correctly sees fewer than 10 categories as 'stale'
+          # and legitimately writes fewer categories today -- not a failure. This already
+          # happened once (2026-07-16 manual run collided with the cache). The weekly
+          # schedule always lands >= 6 days after the prior run, so every category is
+          # always stale then -- this check only means something on that cadence.
+          if event_name == 'schedule':
+              q = f\"SELECT COUNT(DISTINCT category) c FROM {project}.bronze.serpapi_prices_raw WHERE DATE(collected_at) = '{today}'\"
+              n_cat = list(bq.query(q).result())[0].c
+              print(f'serpapi_prices_raw {today}: {n_cat}/10 categories covered (floor 8)')
+              assert n_cat >= 8, f'serpapi_prices_raw only covered {n_cat}/10 categories for {today}'
+          else:
+              print(f'serpapi_prices_raw category-coverage check skipped (event={event_name!r} -- SerpAPI\'s 6-day cache can legitimately thin category coverage off-cadence)')
+
+          # Kroger: NOT gated. collect_kroger_prices() has no per-store cache -- every run
+          # that actually collects (i.e. isn't skipped whole-run by _partition_exists_today())
+          # always attempts all 20 stores, so a thin store count is always a real signal,
+          # schedule or manual, unlike SerpAPI's category check above. Floor tolerates a
+          # store or two failing (transient per-store catalog gaps) without crying wolf,
+          # but not more.
+          q = f\"SELECT COUNT(DISTINCT store_id) c FROM {project}.bronze.kroger_prices_raw WHERE DATE(collected_at) = '{today}'\"
+          n_store = list(bq.query(q).result())[0].c
+          print(f'kroger_prices_raw {today}: {n_store}/20 stores covered (floor 18)')
+          assert n_store >= 18, f'kroger_prices_raw only covered {n_store}/20 stores for {today}'
+
           print('Both partitions verified for', today)
           "
 

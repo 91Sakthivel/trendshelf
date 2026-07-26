@@ -113,6 +113,11 @@ def _upload_append_idempotent(df: pd.DataFrame, table_name: str,
             type_=bigquery.TimePartitioningType.DAY,
             field=date_col,
         ),
+        # Lets a load add a new column to the destination table's schema when the
+        # incoming DataFrame has one it doesn't yet have (e.g. serpapi_prices_raw gaining
+        # walmart_item_id/walmart_product_id). A no-op for any caller whose DataFrame
+        # introduces no new columns (e.g. Kroger's) -- there's nothing for it to add.
+        schema_update_options=[bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION],
     )
     job = BQ.load_table_from_dataframe(df, destination, job_config=job_config)
     job.result()
@@ -572,6 +577,15 @@ def collect_serpapi() -> bool:
                     "product_name":       item.get("title", "")[:500],
                     "competitor_store":   "Walmart DFW",
                     "walmart_store_id":   WALMART_DFW_STORE_ID,
+                    # Stable Walmart catalog identifiers, captured going forward only --
+                    # historical rows (collected before this field existed) have no item ID
+                    # and cannot be backfilled, since the raw API JSON was never retained.
+                    # us_item_id is Walmart's own canonical item ID (embedded in its product
+                    # URLs, and what SerpAPI's own product-lookup endpoint keys on); product_id
+                    # is captured alongside as a hedge in case us_item_id proves variant-level
+                    # in some category. See docs/threshold_decisions.md #7.17.
+                    "walmart_item_id":    item.get("us_item_id"),
+                    "walmart_product_id": item.get("product_id"),
                     "competitor_price":   price_float,
                     "price_per_unit":     price_per_unit_float,
                     "price_per_unit_str": price_per_unit_str,

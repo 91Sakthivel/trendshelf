@@ -197,19 +197,51 @@ temporal_features as (
 -- 'Overpriced' by format, not mispricing. competitor_relevance_level scales
 -- this per category; true same-format peers (Tom Thumb/H-E-B) are roadmap.
 
-competitor_by_category as (
+-- competitor_product_count is AVERAGED across stores, not summed: it means "roughly how
+-- many products we typically observe per store", the same thing it meant when there was
+-- only ever one store. Summing would let adding stores silently inflate the count and
+-- promote rows into higher confidence/reliability tiers without any new depth of evidence
+-- per store -- see docs/threshold_decisions.md #7.16. At N=1 store this is mathematically
+-- identical to the old COUNT(*) (AVG of one value is that value).
+competitor_count_by_store_category as (
 
     select
         category,
-        ROUND(APPROX_QUANTILES(competitor_price, 100)[OFFSET(50)], 4)
-                                                                as competitor_avg_price, -- holds MEDIAN since v4 (column name kept for compatibility)
-        COUNT(*)                                                as competitor_product_count,
-        MAX(DATE(collected_at))                                 as competitor_price_asof_date
+        walmart_store_id,
+        COUNT(*)                                                as store_product_count
     from {{ ref('stg_serpapi_prices') }}
     cross join serpapi_asof sa
     where competitor_price is not null
       and DATE(collected_at) = sa.serpapi_date
+    group by category, walmart_store_id
+
+),
+
+competitor_product_count_by_category as (
+
+    select
+        category,
+        ROUND(AVG(store_product_count), 2)                      as competitor_product_count
+    from competitor_count_by_store_category
     group by category
+
+),
+
+competitor_by_category as (
+
+    select
+        s.category,
+        ROUND(APPROX_QUANTILES(s.competitor_price, 100)[OFFSET(50)], 4)
+                                                                as competitor_avg_price, -- holds MEDIAN since v4 (column name kept for compatibility)
+        pc.competitor_product_count,
+        MAX(DATE(s.collected_at))                               as competitor_price_asof_date
+    from {{ ref('stg_serpapi_prices') }} s
+    cross join serpapi_asof sa
+    left join competitor_product_count_by_category pc
+           on s.category = pc.category
+    where s.competitor_price is not null
+      and DATE(s.collected_at) = sa.serpapi_date
+    group by s.category, pc.competitor_product_count
 
 ),
 

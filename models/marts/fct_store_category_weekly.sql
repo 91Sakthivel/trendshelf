@@ -79,18 +79,49 @@ serpapi_asof_by_date as (
 ),
 
 -- ── CTE 5: Competitor median per as-of date × category ────────────────────────
+-- competitor_product_count is AVERAGED across stores per date, not summed -- same
+-- reasoning as mart_pricing_intelligence.sql's competitor_by_category (see
+-- docs/threshold_decisions.md #7.16): at N=1 store this is mathematically identical
+-- to the old COUNT(*).
 
-competitor_by_date_category as (
+competitor_count_by_store_date_category as (
 
     select
         DATE(collected_at)                                          as serpapi_date,
         category,
-        ROUND(APPROX_QUANTILES(competitor_price, 100)[OFFSET(50)], 4)
-                                                                    as competitor_median_price,
-        COUNT(*)                                                    as competitor_product_count
+        walmart_store_id,
+        COUNT(*)                                                    as store_product_count
     from {{ ref('stg_serpapi_prices') }}
     where competitor_price is not null
+    group by 1, 2, 3
+
+),
+
+competitor_product_count_by_date_category as (
+
+    select
+        serpapi_date,
+        category,
+        ROUND(AVG(store_product_count), 2)                         as competitor_product_count
+    from competitor_count_by_store_date_category
     group by 1, 2
+
+),
+
+competitor_by_date_category as (
+
+    select
+        DATE(s.collected_at)                                        as serpapi_date,
+        s.category,
+        ROUND(APPROX_QUANTILES(s.competitor_price, 100)[OFFSET(50)], 4)
+                                                                    as competitor_median_price,
+        pc.competitor_product_count
+    from {{ ref('stg_serpapi_prices') }} s
+    left join competitor_product_count_by_date_category pc
+           on DATE(s.collected_at) = pc.serpapi_date
+          and s.category          = pc.category
+    where s.competitor_price is not null
+    group by 1, 2, pc.competitor_product_count
 
 ),
 

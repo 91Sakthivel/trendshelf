@@ -34,10 +34,21 @@ COLLECT_KROGER        = os.getenv("COLLECT_KROGER",        "True")  == "True"
 COLLECT_FRED          = os.getenv("COLLECT_FRED",          "True")  == "True"
 COLLECT_BLS           = os.getenv("COLLECT_BLS",           "True")  == "True"
 
-# ── Walmart DFW competitor store ───────────────────────────────────────────────
+# ── Walmart DFW competitor stores ──────────────────────────────────────────────
+# Mirrors KROGER_STORES' shape (hardcoded here, not read from .env, same as Kroger's
+# list) so collect_serpapi() can loop over stores the same way collect_kroger_prices()
+# already does. Kept at ONE entry deliberately -- this is Tier 2 collector-capability
+# prep, not the store rollout. See docs/threshold_decisions.md #7.18.
 # Verified: Walmart Supercenter, 4122 LBJ Fwy, Dallas TX 75244
 # Source: walmart.com/store/2105-dallas-tx
-WALMART_DFW_STORE_ID = os.getenv("WALMART_DFW_STORE_ID", "2105")
+WALMART_STORES = [
+    {"id": "2105", "city": "Dallas - LBJ Fwy"},
+]
+
+# Backward-compat alias: dashboard/app.py and dashboard/config.py import this name
+# directly (display-only, not collection logic) and are out of scope for this fix.
+# Derived from the list above so it can't drift from it.
+WALMART_DFW_STORE_ID = WALMART_STORES[0]["id"]
 
 # ── FRED PPI series ──────────────────────────────────────────────────────────
 # FRED_SCORING_PPI_SERIES_ID must match dbt_project.yml's scoring_ppi_series_id.

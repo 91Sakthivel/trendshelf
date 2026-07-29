@@ -105,13 +105,26 @@ jobs:
           # happened once (2026-07-16 manual run collided with the cache). The weekly
           # schedule always lands >= 6 days after the prior run, so every category is
           # always stale then -- this check only means something on that cadence.
+          # SerpAPI store coverage: schedule-only, same reason as the category check above
+          # and now for the same underlying cause -- collect_serpapi()'s cache keys on
+          # (category, store) PAIRS as of the multi-store collector fix (#7.18), so an
+          # off-cadence manual run can legitimately thin STORE coverage the same way it can
+          # thin category coverage. Floor is 1 (== len(WALMART_STORES) today): this workflow
+          # has no way to read config.py's store count, so the floor is a literal that MUST
+          # be raised by hand whenever WALMART_STORES actually grows past one entry -- it is
+          # not self-scaling like the collector's own internal guards are.
           if event_name == 'schedule':
               q = f\"SELECT COUNT(DISTINCT category) c FROM {project}.bronze.serpapi_prices_raw WHERE DATE(collected_at) = '{today}'\"
               n_cat = list(bq.query(q).result())[0].c
               print(f'serpapi_prices_raw {today}: {n_cat}/10 categories covered (floor 8)')
               assert n_cat >= 8, f'serpapi_prices_raw only covered {n_cat}/10 categories for {today}'
+
+              q = f\"SELECT COUNT(DISTINCT walmart_store_id) c FROM {project}.bronze.serpapi_prices_raw WHERE DATE(collected_at) = '{today}'\"
+              n_wm_store = list(bq.query(q).result())[0].c
+              print(f'serpapi_prices_raw {today}: {n_wm_store} store(s) covered (floor 1)')
+              assert n_wm_store >= 1, f'serpapi_prices_raw covered {n_wm_store} stores for {today}, expected >= 1'
           else:
-              print(f'serpapi_prices_raw category-coverage check skipped (event={event_name!r} -- SerpAPI\'s 6-day cache can legitimately thin category coverage off-cadence)')
+              print(f'serpapi_prices_raw category/store-coverage checks skipped (event={event_name!r} -- SerpAPI\'s 6-day per-pair cache can legitimately thin coverage off-cadence)')
 
           # Kroger: NOT gated. collect_kroger_prices() has no per-store cache -- every run
           # that actually collects (i.e. isn't skipped whole-run by _partition_exists_today())

@@ -20,7 +20,7 @@ from config import (
     PROJECT_ID, DATASET, CREDENTIALS_PATH,
     KROGER_CLIENT_ID, KROGER_CLIENT_SECRET,
     SERPAPI_KEY, FRED_API_KEY,
-    WALMART_DFW_STORE_ID,
+    WALMART_STORES,
     KROGER_STORES, CATEGORIES,
     WALMART_QUERIES, GOOGLE_TRENDS_KEYWORDS,
     COLLECT_GOOGLE_TRENDS, COLLECT_SERPAPI,
@@ -429,51 +429,79 @@ def collect_bls_cpi() -> bool:
 
 
 def collect_serpapi() -> bool:
-    """SerpAPI — Walmart DFW competitor prices for 10 categories
+    """SerpAPI — Walmart competitor prices across configured stores × categories
     → serpapi_prices_raw
 
-    Uses engine=walmart with DFW Supercenter store_id=2105
-    (4122 LBJ Fwy, Dallas TX 75244 — full Supercenter).
-    Returns single-item Walmart.com prices with price_per_unit
-    for apples-to-apples comparison with Kroger single-item prices.
-    7-day cache per category. Max 10 searches per run.
+    Uses engine=walmart with store_id per entry in WALMART_STORES (currently one:
+    DFW Supercenter 2105, 4122 LBJ Fwy, Dallas TX 75244). Returns single-item
+    Walmart.com prices with price_per_unit for apples-to-apples comparison with
+    Kroger single-item prices. 6-day cache per (category, store) pair. Loop order
+    is category-outer, store-inner deliberately: if the run is cut short, a category
+    fails to ABSENT (no store has it, showing up in DISTINCT category coverage) rather
+    than SILENTLY PARTIAL (every category computed from only one store while every
+    downstream column looks complete). See docs/threshold_decisions.md #7.18.
     """
-    log.info("[5/5] SerpAPI Walmart DFW — collecting %d categories...", len(CATEGORIES))
+    total_pairs = len(WALMART_STORES) * len(CATEGORIES)
+    log.info(
+        "[5/5] SerpAPI Walmart — collecting %d stores × %d categories (%d pairs)...",
+        len(WALMART_STORES), len(CATEGORIES), total_pairs,
+    )
 
     try:
-        # 7-day cache check per category
-        fresh_categories: set = set()
+        # 6-day cache check per (category, store) pair -- keyed on BOTH, not category
+        # alone, so a pair already fetched for one store doesn't mark a DIFFERENT
+        # store's same category falsely fresh.
+        fresh_pairs: set = set()
         try:
             fresh_check = f"""
-                SELECT DISTINCT category
+                SELECT DISTINCT category, walmart_store_id
                 FROM `{PROJECT_ID}.{DATASET}.serpapi_prices_raw`
                 WHERE search_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 6 DAY)
                   AND competitor_store = 'Walmart DFW'
             """
             for row in BQ.query(fresh_check).result():
-                fresh_categories.add(row["category"])
+                fresh_pairs.add((row["category"], row["walmart_store_id"]))
         except Exception:
             pass  # Table doesn't exist yet; treat all as stale
 
-        if all(cat in fresh_categories for cat in CATEGORIES):
+        # category-outer, store-inner -- see docstring for why this order specifically.
+        all_pairs = [
+            (category, store)
+            for category in CATEGORIES
+            for store in WALMART_STORES
+        ]
+
+        if all((cat, store["id"]) in fresh_pairs for cat, store in all_pairs):
             log.info(
-                "[5/5] SerpAPI — SKIPPED (all %d categories cached < 7 days)",
-                len(CATEGORIES),
+                "[5/5] SerpAPI — SKIPPED (all %d store×category pairs cached < 7 days)",
+                total_pairs,
             )
             return True
 
-        stale = [cat for cat in CATEGORIES if cat not in fresh_categories]
-        log.info("[5/5] SerpAPI — %d/%d categories need refresh", len(stale), len(CATEGORIES))
+        stale = [
+            (cat, store) for cat, store in all_pairs
+            if (cat, store["id"]) not in fresh_pairs
+        ]
+        log.info("[5/5] SerpAPI — %d/%d pairs need refresh", len(stale), total_pairs)
 
         all_rows = []
         searches_used = 0
-        failed_categories = []
+        failed_pairs = []
 
-        for category in stale:
-            if searches_used >= 10:
-                log.info("  QUOTA: reached 10-search limit, stopping")
+        # Cap = exactly one full pass across configured stores × categories. len(stale)
+        # can never exceed this by construction (it's built from all_pairs above), so
+        # this cannot fire against ordinary staleness -- it is a RUNAWAY guard against
+        # more iterations than configuration should ever produce (e.g. a future bug
+        # duplicating pairs), not a quota throttle. The actual quota protection is that
+        # a full pass is bounded by configuration, period.
+        cap = total_pairs
+
+        for category, store in stale:
+            if searches_used >= cap:
+                log.info("  QUOTA: reached %d-search cap, stopping", cap)
                 break
 
+            store_id, store_city = store["id"], store["city"]
             query = WALMART_QUERIES.get(category, category)
 
             # Retry up to 2 extra times on timeout/connection errors.
@@ -487,7 +515,7 @@ def collect_serpapi() -> bool:
                         params={
                             "engine":   "walmart",
                             "query":    query,
-                            "store_id": WALMART_DFW_STORE_ID,
+                            "store_id": store_id,
                             "api_key":  SERPAPI_KEY,
                             "sort":     "best_match",
                         },
@@ -500,8 +528,8 @@ def collect_serpapi() -> bool:
                     last_err = e
                     if attempt < 2:
                         log.warning(
-                            "  Search — %-25s — attempt %d timed out, retrying in 3s...",
-                            category, attempt + 1,
+                            "  Search — %-25s (%s) — attempt %d timed out, retrying in 3s...",
+                            category, store_city, attempt + 1,
                         )
                         time.sleep(3)
                 except Exception as e:
@@ -510,10 +538,10 @@ def collect_serpapi() -> bool:
 
             if data is None:
                 log.warning(
-                    "  Search — %-25s — FAILED after 3 attempts: %s",
-                    category, last_err,
+                    "  Search — %-25s (%s) — FAILED after 3 attempts: %s",
+                    category, store_city, last_err,
                 )
-                failed_categories.append(category)
+                failed_pairs.append((category, store_id))
                 continue
 
             results = data.get("organic_results", [])
@@ -576,7 +604,7 @@ def collect_serpapi() -> bool:
                 all_rows.append({
                     "product_name":       item.get("title", "")[:500],
                     "competitor_store":   "Walmart DFW",
-                    "walmart_store_id":   WALMART_DFW_STORE_ID,
+                    "walmart_store_id":   store_id,
                     # Stable Walmart catalog identifiers, captured going forward only --
                     # historical rows (collected before this field existed) have no item ID
                     # and cannot be backfilled, since the raw API JSON was never retained.
@@ -602,20 +630,25 @@ def collect_serpapi() -> bool:
                 if prices_collected else 0
             )
             log.info(
-                "  Search %2d/10 — %-25s — %3d prices — avg $%.2f",
-                searches_used, category, row_count, avg_price,
+                "  Search %3d/%d — %-25s (%s) — %3d prices — avg $%.2f",
+                searches_used, cap, category, store_city, row_count, avg_price,
             )
 
-        if failed_categories:
+        if failed_pairs:
             log.warning(
-                "[5/5] SerpAPI — %d categories failed: %s",
-                len(failed_categories), failed_categories,
+                "[5/5] SerpAPI — %d pairs failed: %s",
+                len(failed_pairs), failed_pairs,
             )
 
-        succeeded = len(stale) - len(failed_categories)
-        if succeeded < 8:
+        # Both guards below are expressed relative to len(stale) (pairs actually
+        # attempted this run), not fixed counts -- so they scale automatically with
+        # however many stores/categories are configured. At today's one store, full
+        # weekly run (len(stale)=10), both reduce to exactly today's literals: 0.8*10
+        # == 8.0 and 20*10 == 200.
+        succeeded = len(stale) - len(failed_pairs)
+        if succeeded < 0.8 * len(stale):
             log.error(
-                "[5/5] SerpAPI — only %d/%d categories succeeded (need >= 8), skipping upload",
+                "[5/5] SerpAPI — only %d/%d pairs succeeded (need >= 80%%), skipping upload",
                 succeeded, len(stale),
             )
             return False
@@ -628,10 +661,19 @@ def collect_serpapi() -> bool:
         df["competitor_price"] = pd.to_numeric(df["competitor_price"], errors="coerce")
         df["price_per_unit"]   = pd.to_numeric(df["price_per_unit"],   errors="coerce")
 
-        _upload_append_idempotent(df, "serpapi_prices_raw", min_rows=200)
+        # 20 rows/pair is the AVERAGE density (200 rows / 10 categories at one store),
+        # not a per-pair guarantee -- observed per-category density actually ranges
+        # 6-40 (personal care/household run thin; beverages/coffee tea run full). An
+        # off-cadence run where only sparse pairs are stale could legitimately fall
+        # under this floor and abort. Accepted deliberately: full weekly passes are the
+        # norm, a false abort costs only a re-run with no data lost, and a lower floor
+        # would let genuinely degraded data (the zero-price condition seen live on
+        # 2026-07-25) through instead. See docs/threshold_decisions.md #7.18.
+        min_rows = 20 * len(stale)
+        _upload_append_idempotent(df, "serpapi_prices_raw", min_rows=min_rows)
         log.info(
-            "[5/5] SerpAPI — PASS  (%d prices, %d searches used, %d categories failed)",
-            len(df), searches_used, len(failed_categories),
+            "[5/5] SerpAPI — PASS  (%d prices, %d searches used, %d pairs failed)",
+            len(df), searches_used, len(failed_pairs),
         )
         return True
 

@@ -684,6 +684,14 @@ def collect_serpapi() -> bool:
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+# ESSENTIAL: price data the site is built on -- a failure here means the run
+# produced nothing worth transforming, so it must fail the job.
+# SUPPLEMENTARY: reference/context series -- a failure here shouldn't block
+# transform from running on the price data that did land.
+ESSENTIAL_COLLECTORS = {"kroger_prices_raw", "serpapi_prices_raw"}
+SUPPLEMENTARY_COLLECTORS = {"fred_ppi_raw", "bls_cpi_raw", "google_trends_raw"}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="TrendShelf Bronze Layer Collector",
@@ -782,17 +790,26 @@ def main() -> int:
     passed = sum(results.values())
     total  = len(results)
 
+    essential_failed = [n for n, ok in results.items() if not ok and n in ESSENTIAL_COLLECTORS]
+    supplementary_failed = [n for n, ok in results.items() if not ok and n in SUPPLEMENTARY_COLLECTORS]
+
     print("\n" + "=" * 64)
     print(f"  Collection Summary — MODE: {mode.upper()}")
     print("=" * 64)
     for name, ok in results.items():
         status = "PASS" if ok else "FAIL"
-        print(f"  {status}  {PROJECT_ID}.{DATASET}.{name}")
+        tier   = "essential" if name in ESSENTIAL_COLLECTORS else "supplementary"
+        print(f"  {status}  ({tier:<13}) {PROJECT_ID}.{DATASET}.{name}")
     print("-" * 64)
     print(f"  {passed}/{total} active collectors completed successfully")
+
+    if supplementary_failed:
+        print(f"  [WARN] optional source(s) failed, continuing: {', '.join(supplementary_failed)}")
+    if essential_failed:
+        print(f"  [FATAL] essential source(s) failed: {', '.join(essential_failed)}")
     print("=" * 64)
 
-    return 0 if passed == total else 1
+    return 1 if essential_failed else 0
 
 
 if __name__ == "__main__":

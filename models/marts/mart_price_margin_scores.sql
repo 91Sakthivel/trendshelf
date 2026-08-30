@@ -143,6 +143,7 @@ base as (
         d.load_timestamp,
         d.overall_demand_gap_score,
         d.avg_search_interest,
+        d.macro_data_available,
 
         d.retail_price,
         d.ppi_value,
@@ -217,9 +218,13 @@ scored as (
         -- Measures whether shelf price is premium (high) vs. cost-driven (low).
         -- Compares retail price to CPI index: a premium brand should price above
         -- inflation; scoring 100 = significantly above CPI trend.
+        -- retail_price missing (50) and cpi_value missing (NULL) are different
+        -- unknowns: a retail data gap is unchanged from before; a macro (BLS) gap
+        -- must never resolve to a fabricated neutral score. See #7.20.
         LEAST(100, GREATEST(0,
             CASE
-                WHEN retail_price IS NULL OR cpi_value IS NULL THEN 50
+                WHEN retail_price IS NULL THEN 50
+                WHEN cpi_value IS NULL THEN NULL
                 ELSE
                     -- Normalise retail price against CPI baseline (260 ≈ typical food CPI)
                     SAFE_DIVIDE(retail_price * 100.0, NULLIF(cpi_value / 2.6, 0))
@@ -230,18 +235,20 @@ scored as (
         -- How much wholesale cost (PPI) has RISEN in the last 3 months — directional,
         -- not volatility. A falling-cost period is relief, not a shock, and floors to 0
         -- via the outer GREATEST rather than scoring identically to a rise of the same
-        -- magnitude (the prior ABS() formulation did the latter). See #7.14. NULL-fallback
-        -- caveat (COALESCE .. 10 scoring higher than a confirmed falling-cost 0) logged in
-        -- #7.14, not fixed here — dormant today, same unknown-vs-evidenced class as #7.9/#7.12.
-        LEAST(100, GREATEST(0,
-            COALESCE(
+        -- magnitude (the prior ABS() formulation did the latter). See #7.14.
+        -- NULL when ppi_value itself is absent (macro data absent) — the old formula's
+        -- nested COALESCE(ppi_value,0) computed a bogus non-NULL number from a missing
+        -- PPI reading even before its outer COALESCE(...,10) fallback could fire; both
+        -- were the same sentinel-over-NULL defect this batch removes. See #7.20.
+        CASE
+            WHEN ppi_value IS NULL THEN NULL
+            ELSE LEAST(100, GREATEST(0,
                 SAFE_DIVIDE(
-                    COALESCE(ppi_value, 0) - COALESCE(ppi_3m_ago, ppi_value, 0),
+                    ppi_value - COALESCE(ppi_3m_ago, ppi_value),
                     NULLIF(COALESCE(ppi_3m_ago, 100), 0)
-                ) * 500,   -- scale: 5% PPI move → score of 25; 20% move → score of 100
-                10
-            )
-        ))                                          as cost_shock_score,
+                ) * 500   -- scale: 5% PPI move → score of 25; 20% move → score of 100
+            ))
+        END                                         as cost_shock_score,
 
         -- ── 3. Margin Pressure Risk ───────────────────────────────────────────
         -- Retail price stagnant / falling while PPI rising (beyond the noise deadband)
@@ -250,9 +257,12 @@ scored as (
         -- decisions.md #7.8 for the natural-gap derivation of the 0.1 threshold).
         -- 50 = "trend unresolved" when either side has no prior-month reading to compare
         -- against — neutral, not a guess at compression or health (see #7.9).
+        -- retail_price missing (30) and ppi_value missing (NULL) are different unknowns
+        -- — same split as price_position_score above. See #7.20.
         LEAST(100, GREATEST(0,
             CASE
-                WHEN retail_price IS NULL OR ppi_value IS NULL THEN 30
+                WHEN retail_price IS NULL THEN 30
+                WHEN ppi_value IS NULL THEN NULL
                 WHEN NOT has_prior_month_price OR NOT has_prior_month_ppi THEN 50
                 WHEN retail_price_declining
                  AND ppi_mom_pct_change > {{ var('ppi_deadband_pct') }}
@@ -310,6 +320,7 @@ scored as (
         has_prior_month_ppi,
         overall_demand_gap_score,
         avg_search_interest,
+        macro_data_available,
 
         signal_type,
         'v4_robust_heuristic_calibration'           as score_version,
@@ -317,9 +328,9 @@ scored as (
             WHEN retail_price IS NULL
                 THEN 'No Kroger price data for this month; price scores estimated at mid-range defaults'
             WHEN ppi_value IS NULL
-                THEN 'No FRED PPI for this month; cost-side scores use prior month estimates'
+                THEN 'No FRED PPI for this month; cost_shock_score and margin_pressure_proxy_score are NULL (macro data absent)'
             WHEN cpi_value IS NULL
-                THEN 'BLS CPI suppressed or missing; price position score defaults to 50'
+                THEN 'BLS CPI suppressed or missing; price_position_score is NULL (macro data absent)'
             ELSE 'All price signals measured'
         END                                         as data_note,
         load_timestamp
@@ -364,6 +375,7 @@ select
     has_prior_month_ppi,
     overall_demand_gap_score,
     avg_search_interest,
+    macro_data_available,
 
     signal_type,
     score_version,

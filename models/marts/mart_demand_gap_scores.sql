@@ -43,6 +43,7 @@ with signals as (
         f.normalized_cpi_growth_score,
         f.ppi_trend_direction,
         f.cpi_trend_direction,
+        f.macro_data_available,
         f.load_timestamp,
         d.calendar_date                             as reference_month,
         c.category_name,
@@ -99,13 +100,25 @@ scored as (
         -- 80%: Google Trends momentum (0-100, centered at 50 = no change)
         -- 20%: Macro inflation composite — average of CPI and PPI normalized scores
         --      (0-100, centered at 50 = stable prices)
-        LEAST(100, GREATEST(0,
-            COALESCE(google_trends_momentum_score, 50.0) * 0.80 +
-            ((
-                COALESCE(normalized_cpi_growth_score, 50.0) +
-                COALESCE(normalized_ppi_growth_score, 50.0)
-            ) / 2.0) * 0.20
-        ))                                          as category_momentum_score,
+        -- macro_data_available = FALSE: reweight to 100% Trends rather than
+        -- COALESCE-ing the macro term to a fabricated 50-neutral — the old formula
+        -- treated "we don't know" identically to "prices are stable," which is the
+        -- same anti-pattern fixed for markdown_safety_score. See #7.20. No-op when
+        -- macro_data_available = TRUE: formula is byte-identical to the original.
+        CASE
+            WHEN macro_data_available THEN
+                LEAST(100, GREATEST(0,
+                    COALESCE(google_trends_momentum_score, 50.0) * 0.80 +
+                    ((
+                        COALESCE(normalized_cpi_growth_score, 50.0) +
+                        COALESCE(normalized_ppi_growth_score, 50.0)
+                    ) / 2.0) * 0.20
+                ))
+            ELSE
+                LEAST(100, GREATEST(0,
+                    COALESCE(google_trends_momentum_score, 50.0)
+                ))
+        END                                         as category_momentum_score,
 
         -- ── 2. Search-to-Shelf Gap Score ──────────────────────────────────────
         -- High search + few products on shelf = large gap = high score.
@@ -160,6 +173,7 @@ scored as (
         demand_trend_direction,
         ppi_trend_direction,
         cpi_trend_direction,
+        macro_data_available,
 
         'MEASURED'                                  as signal_type,
         'v4_robust_heuristic_calibration'           as score_version,
@@ -208,6 +222,7 @@ select
     demand_trend_direction,
     ppi_trend_direction,
     cpi_trend_direction,
+    macro_data_available,
 
     phantom_signal_type,
     signal_type,

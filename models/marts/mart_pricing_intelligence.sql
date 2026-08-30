@@ -128,6 +128,7 @@ demand as (
         overall_demand_gap_score,
         category_momentum_score,
         intent_quality_score,
+        macro_data_available,
         load_timestamp
     from {{ ref('mart_demand_gap_scores') }}
 
@@ -342,6 +343,7 @@ base as (
         d.store_id,
         d.state,
         d.region,
+        d.macro_data_available,
         d.load_timestamp,
 
         cat.category_key,
@@ -434,6 +436,7 @@ scored as (
         category_key,
         location_key,
         store_city,
+        macro_data_available,
 
         kroger_avg_price,
         kroger_product_count,
@@ -464,7 +467,10 @@ scored as (
         COALESCE(intent_quality_score,     50)                  as intent_quality_score,
         COALESCE(competitive_threat_risk,  50)                  as competitive_threat_risk,
         COALESCE(demand_decay_risk,        35)                  as demand_decay_risk,
-        COALESCE(margin_pressure_proxy_score,     30)            as margin_pressure_proxy_score,
+        -- margin_pressure_proxy_score: NOT COALESCEd — NULL when macro is absent must
+        -- survive into the cascade below so gates can branch on macro_data_available
+        -- explicitly instead of silently treating "unknown" as "healthy" (30). See #7.20.
+        margin_pressure_proxy_score,
         COALESCE(promo_risk_score,         30)                  as promo_risk_score,
         COALESCE(overall_confidence_score, 50)                  as confidence_score,
 
@@ -524,12 +530,30 @@ scored as (
 
         -- ── Markdown safety ────────────────────────────────────────────────────
         -- Inverse of markdown risk. High = safe to cut price; Low = cutting is dangerous.
+        -- macro_data_available = FALSE: margin_pressure_proxy_score is NULL, so the
+        -- original 3-term formula would go NULL and silently disable the Reduce-Price
+        -- cascade (mart_pricing_intelligence's gates 6/7), which has nothing to do with
+        -- macro data. Reweight to the 2 surviving components (promo 0.30, decay 0.25 ->
+        -- rescaled to sum to 1.0) so price-evidence-only recommendations keep firing.
+        -- Named exception to "NULL, never reweight" — approved per docs/threshold_
+        -- decisions.md #7.20, citing the #7.11 Google-Trends-removal precedent.
+        -- MUST be a no-op when macro_data_available = TRUE: that branch is the original
+        -- formula, unchanged, byte-for-byte. Asserted by tests/assert_markdown_safety_
+        -- macro_present_noop.sql.
         LEAST(100, GREATEST(0,
-            100 - (
-                COALESCE(margin_pressure_proxy_score, 30) * 0.45
-                + COALESCE(promo_risk_score,   30) * 0.30
-                + COALESCE(demand_decay_risk,  35) * 0.25
-            )
+            CASE
+                WHEN macro_data_available THEN
+                    100 - (
+                        margin_pressure_proxy_score * 0.45
+                        + COALESCE(promo_risk_score,   30) * 0.30
+                        + COALESCE(demand_decay_risk,  35) * 0.25
+                    )
+                ELSE
+                    100 - (
+                        COALESCE(promo_risk_score,  30) * (0.30 / 0.55)
+                        + COALESCE(demand_decay_risk, 35) * (0.25 / 0.55)
+                    )
+            END
         ))                                                      as markdown_safety_score,
 
         load_timestamp
@@ -699,15 +723,20 @@ actioned as (
                 THEN 'Investigate'
 
             -- 3. Avoid Discount: margin too pressured to cut price
+            -- Margin leg only fires when macro is known — unknown margin never
+            -- manufactures an AVOID that price/promo evidence alone doesn't support.
+            -- See docs/threshold_decisions.md #7.20.
             WHEN markdown_safety_score < {{ var('avoid_markdown_safety_threshold') }}
-              OR margin_pressure_proxy_score  > {{ var('avoid_margin_pressure_threshold') }}
+              OR (macro_data_available AND margin_pressure_proxy_score > {{ var('avoid_margin_pressure_threshold') }})
                 THEN 'Avoid Discount'
 
             -- 4. Raise Price: underpriced, strong demand, pricing power confirmed
+            -- Margin leg: unknown margin never BLOCKS a price-evidence-supported
+            -- increase — routes on price evidence alone. See #7.20.
             WHEN price_position = 'Underpriced'
              AND demand_signal = 'High'
              AND premium_support_proxy_score >= {{ var('expand_margin_threshold') }}
-             AND margin_pressure_proxy_score < {{ var('margin_pressure_avoid_threshold') }}
+             AND (NOT macro_data_available OR margin_pressure_proxy_score < {{ var('margin_pressure_avoid_threshold') }})
                 THEN 'Review Price Increase'
 
             -- 5. Hold Premium: overpriced but demand + category elasticity support it
@@ -880,6 +909,7 @@ select
     ROUND(promo_risk_score,         2)                          as promo_risk_score,
     ROUND(demand_decay_risk,        2)                          as demand_decay_risk,
     ROUND(markdown_safety_score,    2)                          as markdown_safety_score,
+    macro_data_available,
 
     -- Elasticity
     category_sensitivity_tier,

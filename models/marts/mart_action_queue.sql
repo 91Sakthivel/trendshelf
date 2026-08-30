@@ -187,6 +187,7 @@ full_signals as (
             + (100 - p.overall_margin_risk_score)      * {{ var('opp_weight_margin') }}
         )), 1)                                                   as overall_opportunity_score,
 
+        e.macro_data_available,
         e.load_timestamp
 
     from expansion  e
@@ -317,7 +318,11 @@ select
             'Do not expand — demand decay risk (',
             CAST(ROUND(demand_decay_risk, 0) AS STRING),
             '/100) or cost-pressure indicator (',
-            CAST(ROUND(margin_pressure_proxy_score, 0) AS STRING),
+            -- COALESCE-to-'unknown' here is text formatting, not scoring: BigQuery's
+            -- CONCAT returns NULL for the whole string if any argument is NULL, which
+            -- would blank this description even when AVOID correctly fired off demand
+            -- decay alone (margin unknown). See docs/threshold_decisions.md #7.20.
+            COALESCE(CAST(ROUND(margin_pressure_proxy_score, 0) AS STRING), 'unknown'),
             '/100) is critical; stabilise current shelf position first'
         )
         WHEN 'EXPAND' THEN CONCAT(
@@ -403,7 +408,8 @@ select
             'Demand decaying or cost-pressure indicator elevated (decay risk ',
             CAST(ROUND(demand_decay_risk, 0) AS STRING),
             ', cost-pressure indicator ',
-            CAST(ROUND(margin_pressure_proxy_score, 0) AS STRING),
+            -- Same CONCAT-with-NULL guard as action_description above. See #7.20.
+            COALESCE(CAST(ROUND(margin_pressure_proxy_score, 0) AS STRING), 'unknown'),
             '/100). Not the right time to act — stabilise current position first.'
         )
         WHEN 'EXPAND' THEN CONCAT(
@@ -462,9 +468,17 @@ select
     END                                                      as reason_code,
 
     -- Score that triggered the action
+    -- AVOID leg: BigQuery's GREATEST returns NULL if any argument is NULL, so a
+    -- correctly-fired AVOID (off demand_decay_risk alone, margin unknown) would
+    -- otherwise report a NULL driving_score even though the action itself is valid.
+    -- See docs/threshold_decisions.md #7.20.
     ROUND(
         CASE action_type
-            WHEN 'AVOID'       THEN GREATEST(demand_decay_risk, margin_pressure_proxy_score)
+            WHEN 'AVOID'       THEN
+                CASE
+                    WHEN margin_pressure_proxy_score IS NULL THEN demand_decay_risk
+                    ELSE GREATEST(demand_decay_risk, margin_pressure_proxy_score)
+                END
             WHEN 'EXPAND'      THEN expansion_readiness_score
             WHEN 'DEFEND'      THEN competitive_threat_risk
             WHEN 'PITCH'       THEN expansion_readiness_score
@@ -500,13 +514,21 @@ select
     demand_trend_direction,
     seasonality_flag,
     macro_risk_flag,
+    macro_data_available,
     competitive_intensity,
     premium_support_proxy_score,
     markdown_safety_score,
 
     overall_opportunity_score,
 
+    -- overall_opportunity_score is left NULL when macro is absent (it sums
+    -- expansion_readiness_score and overall_margin_risk_score, both of which can be
+    -- NULL — no reweight, per decision). Without this branch, the old ELSE 'Low' would
+    -- silently catch every NULL row and label it as a real, measured "Low" opportunity
+    -- — manufacturing a business signal from absent data. See docs/threshold_
+    -- decisions.md #7.20.
     CASE
+        WHEN overall_opportunity_score IS NULL THEN 'Unknown'
         WHEN overall_opportunity_score >= {{ var('opp_tier_prime') }} THEN 'Prime'
         WHEN overall_opportunity_score >= {{ var('opp_tier_solid') }} THEN 'Solid'
         WHEN overall_opportunity_score >= {{ var('opp_tier_watch') }} THEN 'Watch'

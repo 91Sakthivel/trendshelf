@@ -138,6 +138,7 @@ base as (
         d.phantom_distribution,
         d.intent_quality_score,
         d.overall_demand_gap_score,
+        d.macro_data_available,
         d.load_timestamp,
 
         v.prev_interest,
@@ -303,6 +304,7 @@ scored as (
             ) * 100,
         2)                                              as competitor_price_advantage_pct,
         overall_demand_gap_score,
+        macro_data_available,
 
         -- MEASURED when SerpAPI competitor data is available; PROXY when falling back to PPI
         CASE WHEN competitor_avg_price IS NOT NULL THEN 'MEASURED' ELSE 'PROXY' END as signal_type,
@@ -362,6 +364,7 @@ final as (
         competitor_price_advantage_pct,
         has_prior_month_ppi,
         overall_demand_gap_score,
+        macro_data_available,
 
         signal_type,
         score_version,

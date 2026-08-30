@@ -157,15 +157,15 @@ models:
               config:
                 where: "has_kroger_data"
       - name: ppi_value
-        description: Latest available FRED PPI as-of the reference month
-        tests: [not_null]
+        description: Latest available FRED PPI as-of the reference month. NULL when fred_ppi_raw has no resolvable month for this spine month (macro data absent) — see docs/threshold_decisions.md #7.20.
       - name: cpi_value
-        description: Latest available BLS CPI as-of the reference month
+        description: Latest available BLS CPI as-of the reference month. NULL when bls_cpi_raw has no resolvable month for this spine month (macro data absent) — see #7.20.
+      - name: macro_data_available
+        description: TRUE only when both FRED and BLS resolved an as-of month for this spine month. See #7.20.
         tests: [not_null]
       - name: macro_risk_flag
-        description: High Inflation Risk / Cost Pressure / Cost Relief / Stable Macro
+        description: High Inflation Risk / Cost Pressure / Cost Relief / Stable Macro. NULL when macro is absent — see #7.20.
         tests:
-          - not_null
           - accepted_values:
               values: ['High Inflation Risk', 'Cost Pressure', 'Cost Relief', 'Stable Macro']
 
@@ -219,9 +219,11 @@ models:
         description: Surrogate key matching fact_market_signals
         tests: [not_null, unique]
       - name: margin_pressure_proxy_score
-        description: Margin squeeze risk score 0-100
+        description: Margin squeeze risk score 0-100. NULL when ppi_value is absent (macro data absent) — see docs/threshold_decisions.md #7.20.
         tests:
-          - not_null
+          - not_null:
+              config:
+                where: "ppi_value is not null"
           - dbt_utils.accepted_range:
               min_value: 0
               max_value: 100
@@ -285,18 +287,20 @@ models:
           - accepted_values:
               values: ['Strong', 'Moderate', 'Weak']
       - name: overall_opportunity_score
-        description: Weighted composite of 6 strategic dimensions, 0-100
+        description: Weighted composite of 6 strategic dimensions, 0-100. NULL when macro is absent (expansion_readiness_score and overall_margin_risk_score inputs both go NULL, not reweighted) — see docs/threshold_decisions.md #7.20.
         tests:
-          - not_null
+          - not_null:
+              config:
+                where: "macro_data_available"
           - dbt_utils.accepted_range:
               min_value: 0
               max_value: 100
       - name: opportunity_tier
-        description: Opportunity bracket derived from overall_opportunity_score (Prime ≥75, Solid ≥55, Watch ≥35, Low)
+        description: Opportunity bracket derived from overall_opportunity_score (Prime ≥75, Solid ≥55, Watch ≥35, Low, Unknown when overall_opportunity_score is NULL) — see #7.20.
         tests:
           - not_null
           - accepted_values:
-              values: ['Prime', 'Solid', 'Watch', 'Low']
+              values: ['Prime', 'Solid', 'Watch', 'Low', 'Unknown']
       - name: category_lifecycle
         description: Lifecycle stage derived from velocity, trend direction, and competitive intensity
         tests:
@@ -335,9 +339,11 @@ models:
         description: Surrogate key matching fact_market_signals
         tests: [not_null, unique]
       - name: expansion_readiness_score
-        description: Composite readiness score 0-100
+        description: Composite readiness score 0-100. NULL when macro is absent (store_market_fit_score's margin term goes NULL, not reweighted) — see docs/threshold_decisions.md #7.20.
         tests:
-          - not_null
+          - not_null:
+              config:
+                where: "macro_data_available"
           - dbt_utils.accepted_range:
               min_value: 0
               max_value: 100

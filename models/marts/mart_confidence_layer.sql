@@ -134,6 +134,7 @@ base as (
         d.cpi_value,
         d.overall_demand_gap_score,
         d.signal_type,
+        d.macro_data_available,
         d.load_timestamp,
 
         r.missed_demand_risk,
@@ -265,6 +266,7 @@ scored as (
         price_position_score,
         cost_passthrough_rate,
         signal_type,
+        macro_data_available,
 
         TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), kroger_last_collected,  HOUR) as kroger_hours_ago,
         TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), trends_last_collected,  HOUR) as trends_hours_ago,
@@ -317,6 +319,7 @@ final as (
         cost_passthrough_rate,
         competitor_avg_price,
         signal_type,
+        macro_data_available,
         'v4_robust_heuristic_calibration'           as score_version,
 
         kroger_hours_ago,

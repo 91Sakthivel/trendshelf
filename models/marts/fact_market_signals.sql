@@ -145,7 +145,19 @@ final as (
         mt.ppi_trend_direction,
         mt.cpi_trend_direction,
 
+        -- macro_data_available: TRUE only when BOTH FRED and BLS resolved an as-of
+        -- month for this spine month. Single combined flag, not per-source, because
+        -- both sources come from the same collector run (collect_apis.py --mode
+        -- prices, see docs/threshold_decisions.md #7.6) and a real outage takes both
+        -- down together. See #7.20 for the full design.
+        (fa.fred_month IS NOT NULL AND ba.bls_month IS NOT NULL)   as macro_data_available,
+
+        -- macro_risk_flag: NULL when macro is absent — never a neutral default.
+        -- The old ELSE 'Stable Macro' asserted an observed stability that didn't
+        -- happen; it fired identically whether PPI/CPI were flat OR absent. See #7.20.
         CASE
+            WHEN mt.ppi_trend_direction IS NULL AND mt.cpi_trend_direction IS NULL
+                THEN NULL
             WHEN mt.ppi_trend_direction = 'Rising' AND mt.cpi_trend_direction = 'Rising'
                 THEN 'High Inflation Risk'
             WHEN mt.ppi_trend_direction = 'Rising'

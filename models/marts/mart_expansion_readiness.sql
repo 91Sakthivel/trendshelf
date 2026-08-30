@@ -87,6 +87,7 @@ base as (
         d.intent_quality_score,
         d.overall_demand_gap_score,
         d.signal_type,
+        d.macro_data_available,
         d.load_timestamp,
 
         r.missed_demand_risk,
@@ -171,6 +172,7 @@ scored as (
         cpi_value,
         promo_depth_pct,
         signal_type,
+        macro_data_available,
         load_timestamp
 
     from base
@@ -245,6 +247,13 @@ select
         WHEN overall_confidence_score < 40
             THEN 'COLLECT MORE DATA: Low confidence in signals — refresh all API sources and re-score'
 
+        -- Macro absent: margin_pressure_proxy_score is NULL, so neither this gate nor
+        -- gates 1-3's margin guard above can fire — say so explicitly rather than
+        -- falling through to BUILD CASE/WATCH AND WAIT, which would misreport "unknown"
+        -- as "moderate readiness". See docs/threshold_decisions.md #7.20.
+        WHEN NOT macro_data_available
+            THEN 'MARGIN UNKNOWN: readiness evaluated on price/demand signals only — cost-pressure indicator unavailable this period. Verify margin manually before pitching.'
+
         WHEN margin_pressure_proxy_score >= {{ var('expansion_margin_fix_threshold') }}
             THEN 'FIX MARGINS: Shelf price has not kept pace with rising category input costs (inferred from industry price indices, not observed supplier costs) — review cost position before expanding.'
 
@@ -277,6 +286,7 @@ select
     ppi_value,
     cpi_value,
     promo_depth_pct,
+    macro_data_available,
 
     signal_type,
     -- expansion_readiness_score is model-derived: computed from weighted inputs (demand,

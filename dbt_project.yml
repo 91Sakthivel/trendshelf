@@ -108,10 +108,10 @@ models:
   trendshelf:
     staging:
       +materialized: view
-      +schema: bronze
+      +schema: "{{ var('target_dataset', 'bronze') }}"
     intermediate:
       +materialized: table
-      +schema: bronze
+      +schema: "{{ var('target_dataset', 'bronze') }}"
     marts:
       +materialized: table
-      +schema: bronze
+      +schema: "{{ var('target_dataset', 'bronze') }}"

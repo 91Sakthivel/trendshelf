@@ -644,3 +644,21 @@ Correct for both filings regardless of which structure produced the raw lines: e
 - `dbt run` / `dbt test`: not applicable — no dbt model reads `rag_corpus`.
 
 **Corrects #7.23**, which reported this fix as complete for both filings. It was complete for Kroger only.
+
+### 7.26 LLM access: direct Anthropic API for now, not Vertex AI
+
+**The blocker.** Claude on Vertex AI (the original Phase 2 design, §4 of the Phase 2 proposal) is a Google Cloud Marketplace product. Marketplace purchases are disabled on this project's current free-trial billing account. Upgrading the billing account to remove that restriction converts the whole project's billing posture (free trial -> paid), not just this one product, and the remaining ~$300 trial credit likely wouldn't apply to a Marketplace purchase even after upgrading. Discovered as a hard blocker while attempting to enable Claude in Model Garden, not anticipated in the original proposal.
+
+**Decision.** Use the Anthropic API directly now (`ANTHROPIC_API_KEY`, from `.env`, never hardcoded, never committed — confirmed gitignored). Migrate to Vertex AI around the trial's Nov 6, 2026 expiry, when billing converts to paid and Marketplace purchases become available.
+
+**The Vertex architectural rationale from the Phase 2 proposal is unchanged, not abandoned.** Global endpoint, no data-residency need, service-account auth over an API key — all of that reasoning still holds; it's deferred by a billing-account limitation, not superseded by a better idea. `agent/llm.py`'s `get_client()` is written as the single seam this swap happens through: one function, one provider branch, same `MODEL_ID` string on both paths (current-generation Claude model IDs are unprefixed on both the direct API and Vertex). No provider-abstraction class was built for two cases.
+
+**What changes at the Nov 6 migration, named in advance:**
+1. `agent/llm.py`'s `get_client()` — the `LLM_PROVIDER == "vertex"` branch (already present, currently unused) becomes the live path; the direct-API branch becomes the fallback/dev path instead.
+2. Auth: `ANTHROPIC_API_KEY` dropped in favor of the service-account credentials already specified in the Phase 2 proposal (`roles/aiplatform.user` + read-only BigQuery roles) — the SA itself is unaffected by this whole detour, since it was always about BigQuery access, never the LLM call path.
+3. The Model Garden enablement questionnaire — attempted once already under free-trial billing and blocked there — needs to be re-run once the project is on paid billing.
+
+**Verified, not assumed, at time of writing (2026-08-31):**
+- Model string: `claude-sonnet-5`, confirmed two independent ways — (a) live-fetched from `platform.claude.com/docs/en/about-claude/pricing`, listed as a current, non-deprecated model; (b) a real API call (below) returned `response.model == "claude-sonnet-5"`.
+- Pricing: $2/MTok input, $10/MTok output — confirmed as **standard** pricing (not introductory) directly from the same live-fetched pricing page: *"The $2/$10 per million input/output token pricing for Claude Sonnet 5, announced at launch as introductory pricing through August 31, 2026, is now the standard price. The previously scheduled increase to $3/$15 per million input/output tokens on September 1, 2026 will not occur."* This replaces the earlier Phase 2 proposal's flagged-unverified figure — same number, now confirmed rather than assumed, and confirmed to survive the exact date boundary (Sept 1) that would have invalidated it.
+- Live smoke test (`python -m agent.smoke_test`, `tests/agent/` deliberately does NOT include this — it spends real money on every run, unlike the BigQuery-only tool fixtures): real call to the live API, `stop_reason: end_turn`, response text exactly as instructed, **28 input tokens / 16 output tokens** for a minimal one-line prompt with no tools and no system prompt — the first real per-call datapoint for this project, not an estimate. At $2/$10 per MTok: (28 × $2 + 16 × $10) / 1,000,000 ≈ $0.00021 for that one call. Scales up once real tool schemas and a system prompt are added (Phase 2's later cost estimate assumed ~2.5K tokens of system+tool-schema overhead per turn, which this bare-minimum call had none of).

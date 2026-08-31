@@ -167,3 +167,14 @@ AGENT_MAX_BYTES_BILLED = 100 * 1024 * 1024
 # window (#7.22). Phase 4 gives real turn-count distributions to derive this
 # from; until then it's a guess accepted as a starting point, not a measurement.
 AGENT_MAX_TOOL_ITERATIONS = 8
+
+# ── LLM access (Phase 2) ─────────────────────────────────────────────────────
+# Direct Anthropic API for now, not Vertex AI -- Claude on Vertex is a Google
+# Cloud Marketplace product, and Marketplace purchases are blocked on this
+# project's free-trial billing account. The Vertex architectural rationale
+# (service-account auth, no API key) still stands; migration is planned
+# around the Nov 6 trial expiry. See docs/threshold_decisions.md #7.26 for
+# the full record and what changes at migration. agent/llm.py is the single
+# place this swap happens.
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "anthropic")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")

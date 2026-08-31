@@ -199,14 +199,24 @@ def test_lookup_methodology_known_top_hit():
 
 def test_search_external_context_known_top_hit():
     """Hand-queried, query='what business segments does Walmart operate',
-    source_class='external': top hit chunk 600f8d28..., distance ~0.2976."""
+    source_class='external': top hit chunk c916e034..., distance ~0.2450.
+
+    Re-verified 2026-08-31 after the BUG #9 walmart_10k re-ingest
+    (docs/threshold_decisions.md #7.25) changed this document's chunk
+    boundaries and content, which changed which chunk ranks first for this
+    query -- the original fixture (chunk 600f8d28..., distance ~0.2976)
+    went stale. Confirmed the new top hit is a sensible answer, not just
+    whatever came back: chunk text is "Our operations are conducted in
+    three reportable segments: Walmart U.S., Walmart International and
+    Sam's Club U.S., which are further described below" -- directly on
+    topic for the query."""
     r = search_external_context("what business segments does Walmart operate")
     assert r.error is None
     assert len(r.chunks) > 0
     top = r.chunks[0]
-    assert top.chunk_id == "600f8d284a7f36644c9aa8aec2f4127bb32f979fab47bb2803170dafb69430d5"
+    assert top.chunk_id == "c916e03499c9e79036d9936e3392d04e13a95910a298edab59a2efdcfca5ef23"
     assert top.document_id == "walmart_10k"
-    assert abs(top.similarity_distance - 0.2976) < 0.01
+    assert abs(top.similarity_distance - 0.2450) < 0.01
     # scoping constraint: external only, never an internal doc
     assert all(
         c.document_id in {

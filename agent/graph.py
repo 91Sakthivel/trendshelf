@@ -175,7 +175,8 @@ TOOL_DEFINITIONS = [
         "description": (
             "Call this exactly once, when you are done gathering information, to "
             "submit your final answer. Every entry in grounded_claims must cite "
-            "the tool call it came from via source_tool_call_id -- never a "
+            "the tool call it came from via source_tool_call_id, and the exact "
+            "field name on that tool's result via source_field -- never a "
             "retrieved document. If nothing could be grounded, call this with an "
             "empty grounded_claims list and explain why in narrative."
         ),
@@ -192,8 +193,12 @@ TOOL_DEFINITIONS = [
                             "value": {"type": "string"},
                             "source_tool": {"type": "string"},
                             "source_tool_call_id": {"type": "string"},
+                            "source_field": {
+                                "type": "string",
+                                "description": "the exact field name on the source tool's result that value comes from, e.g. 'premium_support_proxy_score'",
+                            },
                         },
-                        "required": ["claim_text", "value", "source_tool", "source_tool_call_id"],
+                        "required": ["claim_text", "value", "source_tool", "source_tool_call_id", "source_field"],
                     },
                 },
             },
@@ -209,6 +214,40 @@ def _serialize_tool_result(result) -> dict:
 
 def _content_of(message) -> list:
     return message["content"] if isinstance(message, dict) else message.content
+
+
+def abstain_node(state: AgentState) -> dict:
+    """Terminal node for every abstain path. Module-level (not a build_graph
+    closure) because it has no dependency on client/breaker and needs to be
+    unit-testable offline (tests/agent/test_verify.py).
+
+    Preserves Claude's own narrative when one exists instead of replacing it
+    -- Phase 2 run (c) found a correct, well-reasoned self-abstain getting
+    overwritten by a generic message here; this is the fix. Also tags which
+    gate produced the abstain so Phase 4 can separate correct-abstain
+    (model_self_abstain) from false-abstain (verifier_rejected) rates
+    instead of both collapsing into one string.
+
+    Distinguished by which gate ran, not a separate state field: `verified`
+    is False only when verify() actually ran and rejected a specific claim.
+    It's still None when check_reliability rejected first -- nothing was
+    ever submitted for verification, because there was no groundable data to
+    build a claim from in the first place (including Claude correctly
+    declining on its own, as in Phase 2 run (c)).
+    """
+    reason = state.get("abstain_reason") or "could not verify a grounded answer"
+    cause = "verifier_rejected" if state.get("verified") is False else "model_self_abstain"
+    draft = state.get("draft_answer")
+
+    if draft is not None and draft.narrative.strip():
+        narrative = f"{draft.narrative}\n\n[ABSTAIN -- {cause}] {reason}"
+    else:
+        narrative = f"[ABSTAIN -- {cause}] {reason}"
+
+    return {
+        "draft_answer": AgentAnswer(narrative=narrative, grounded_claims=[]),
+        "abstain_reason": f"[{cause}] {reason}",
+    }
 
 
 def build_graph(client=None):
@@ -360,13 +399,6 @@ def build_graph(client=None):
 
     def route_after_verify(state: AgentState) -> str:
         return "answer" if state["verified"] else "abstain"
-
-    def abstain_node(state: AgentState) -> dict:
-        reason = state.get("abstain_reason") or "could not verify a grounded answer"
-        return {
-            "draft_answer": AgentAnswer(narrative=f"[ABSTAIN] {reason}", grounded_claims=[]),
-            "abstain_reason": reason,
-        }
 
     def answer_node(state: AgentState) -> dict:
         return {}

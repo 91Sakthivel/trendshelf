@@ -39,6 +39,12 @@ class GroundedClaim(BaseModel):
     value: Union[float, str]
     source_tool: str
     source_tool_call_id: str
+    # Phase 3 (docs/threshold_decisions.md, verifier build): the field name
+    # on the source tool's result that `value` claims to come from, e.g.
+    # "premium_support_proxy_score". Required, not optional -- a claim with
+    # no named field is not verifiable even in principle, so it must not be
+    # constructible without one.
+    source_field: str
 
 
 class AgentAnswer(BaseModel):

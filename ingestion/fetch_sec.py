@@ -115,7 +115,23 @@ def fetch_10k_sections(cik: int, ticker: str) -> dict:
     sections = {}
     for item in WANTED_ITEMS:
         start, end = headers[item], end_of[item]
-        section_text = "\n".join(lines[start:end])
+        # Join only the non-blank lines, with an explicit "\n\n" between each.
+        # BUG #9 (docs/threshold_decisions.md #7.25): joining the raw,
+        # blank-preserving line list with a single "\n" (the prior approach)
+        # only produces the double-newline gap chunk.py's paragraph splitter
+        # looks for (\n\s*\n) when the source HTML actually contains a real
+        # zero-width-space-only separator line between paragraphs -- true for
+        # Kroger's filing, NOT true for Walmart's, whose filer emits each
+        # paragraph as its own get_text() line with no separator element
+        # between them at all (confirmed by inspecting the raw lines: zero
+        # blank/zero-width-only lines anywhere between Walmart paragraphs).
+        # Filtering blanks and joining survivors with "\n\n" is correct
+        # either way: each surviving line already is one paragraph-worth of
+        # text (one get_text() block/text-node), so an explicit "\n\n"
+        # between every pair guarantees a real gap regardless of whether the
+        # source HTML also happened to contain its own separator markup.
+        paragraph_lines = [line for line in lines[start:end] if line]
+        section_text = "\n\n".join(paragraph_lines)
         if len(section_text) < 200:
             raise SecFetchError(
                 f"{ticker} 10-K Item {item}: extracted section is suspiciously short "

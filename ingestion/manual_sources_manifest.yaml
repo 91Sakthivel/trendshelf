@@ -1,0 +1,25 @@
+# Provenance sidecar for manually-placed sources (scripted fetch not reliable
+# for these — see ingestion/sources.py notes and the Phase 1 report).
+#
+# One entry per document_id that has fetch: "manual" in sources.py. The
+# ingestion script refuses to load any file in manual_sources/ that has no
+# entry here (no orphan text), and reports any manifest entry whose file is
+# missing as PENDING rather than failing the whole run.
+#
+# Fields:
+#   document_id:      must match sources.py exactly
+#   filename:          relative path inside ingestion/manual_sources/
+#   source_url:        where you got it (or null if genuinely unavailable,
+#                       e.g. a PDF handed out at a conference)
+#   doc_title:         human title for citation display
+#   published_date:    YYYY-MM-DD, or null if unknown
+
+entries: []
+
+# Example (uncomment and fill in once a file is placed):
+# entries:
+#   - document_id: kroger_earnings_call_1
+#     filename: kroger_earnings_call_1.txt
+#     source_url: "https://ir.kroger.com/..."
+#     doc_title: "Kroger Q2 FY2026 Earnings Call Transcript"
+#     published_date: "2026-06-15"

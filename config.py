@@ -138,3 +138,32 @@ GOOGLE_TRENDS_KEYWORDS = {
     "household":        "paper towels",
     "coffee tea":       "coffee beans",
 }
+
+# ── Agent (Phase 2) ──────────────────────────────────────────────────────────
+# Read-only against bronze (marts) and rag_corpus. Uses a DEDICATED service
+# account with roles/aiplatform.user + roles/bigquery.dataViewer +
+# roles/bigquery.jobUser only -- no write role, so "the agent never writes to
+# BigQuery" is an IAM boundary, not app-code discipline. That SA doesn't exist
+# yet (see the Phase 2 build report for the exact gcloud commands to create
+# it); until it does, AGENT_CREDENTIALS_PATH falls back to the same key the
+# collector uses, which happens to have read access to the tables the agent
+# needs. Swap the env var once the dedicated key exists -- no code change.
+AGENT_CREDENTIALS_PATH = os.getenv("AGENT_GCP_CREDENTIALS_PATH", CREDENTIALS_PATH)
+if not os.path.isabs(AGENT_CREDENTIALS_PATH):
+    AGENT_CREDENTIALS_PATH = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), AGENT_CREDENTIALS_PATH
+    )
+
+RAG_CORPUS_DATASET = os.getenv("RAG_CORPUS_DATASET", "rag_corpus")
+
+# Safety cap on every BigQuery call a tool makes. Marts are ~400 rows total;
+# 100 MB is generous headroom, not a real limit -- same hygiene as the 10 GiB
+# dbt-level cap (see the CI commit), just sized to what a tool query should
+# ever actually touch.
+AGENT_MAX_BYTES_BILLED = 100 * 1024 * 1024
+
+# Placeholder, not a derived value -- same status as retail_healthy_pct_divisor
+# (docs/threshold_decisions.md #7.13) and the industry_research staleness
+# window (#7.22). Phase 4 gives real turn-count distributions to derive this
+# from; until then it's a guess accepted as a starting point, not a measurement.
+AGENT_MAX_TOOL_ITERATIONS = 8

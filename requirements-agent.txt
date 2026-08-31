@@ -1,0 +1,15 @@
+# agent/ needs ingestion/embed.py's embedding model (sentence-transformers)
+# so a query embedding lands in the same vector space as the stored chunk
+# embeddings -- see agent/tools/docs.py's module docstring. -r rather than
+# re-pinning so the two can't drift on model version.
+-r requirements-ingestion.txt
+
+google-cloud-bigquery
+pydantic>=2
+pytest
+
+# Not yet used -- graph.py and llm.py aren't built in this step (Phase 2
+# build step 1 is tools-only, per instructions). Left pinned here so the
+# next build step doesn't require a second requirements pass.
+anthropic[vertex]
+langgraph

@@ -4,7 +4,7 @@ Runnable offline: build_graph(client=object()) never calls the dummy
 client, since these tests only inspect the compiled graph's structure via
 get_graph(), never .invoke() it.
 """
-from agent.graph import build_graph
+from agent.graph import build_graph, route_after_verify
 
 
 def _compiled():
@@ -73,6 +73,35 @@ def test_tool_definitions_include_all_6_verified_tools_plus_submit_final_answer(
     assert set(VERIFIED_TOOLS.keys()).issubset(defined_names)
     assert SUBMIT_FINAL_ANSWER in defined_names
     assert len(TOOL_DEFINITIONS) == len(VERIFIED_TOOLS) + 1
+
+
+# ── route_after_verify: the missing routing proof ────────────────────────
+# The tests above prove the answer/abstain edges EXIST on the compiled
+# graph. None of them prove a FAILED verification actually routes to
+# abstain -- a typo in the state key read here, or a permissive default on
+# a missing key, would pass every test above while silently routing a
+# fabricated claim to answer. These call the routing function directly.
+
+def test_route_after_verify_false_routes_to_abstain():
+    assert route_after_verify({"verified": False}) == "abstain"
+
+
+def test_route_after_verify_true_routes_to_answer():
+    assert route_after_verify({"verified": True}) == "answer"
+
+
+def test_route_after_verify_with_verified_key_absent_does_not_route_to_answer():
+    """Adversarial state missing the 'verified' key entirely (never happens
+    via initial_state(), which always sets it -- this simulates a future
+    state-construction bug). The only forbidden outcome is "answer": a
+    KeyError (fail loud) is an acceptable safe outcome, same as an explicit
+    "abstain", because neither one silently produces a passing answer."""
+    state = {}
+    try:
+        result = route_after_verify(state)
+    except KeyError:
+        return
+    assert result != "answer"
 
 
 def test_max_tool_iterations_is_wired_from_config_not_hardcoded():

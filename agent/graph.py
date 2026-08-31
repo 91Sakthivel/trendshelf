@@ -250,6 +250,15 @@ def abstain_node(state: AgentState) -> dict:
     }
 
 
+def route_after_verify(state: AgentState) -> str:
+    """Module-level (not a build_graph closure) for the same reason as
+    abstain_node: no dependency on client/breaker, needs to be unit-testable
+    offline (tests/agent/test_graph_shape.py) so a typo in the state key read
+    here, or a permissive default on a missing key, can be caught directly
+    instead of only being provable by inspecting compiled-graph edges."""
+    return "answer" if state["verified"] else "abstain"
+
+
 def build_graph(client=None):
     """Returns a compiled graph plus the ToolBreaker instance driving it
     (so a caller can inspect breaker state after a run, e.g. for tests)."""
@@ -396,9 +405,6 @@ def build_graph(client=None):
 
     def route_after_check_reliability(state: AgentState) -> str:
         return "verify" if state["can_ground"] else "abstain"
-
-    def route_after_verify(state: AgentState) -> str:
-        return "answer" if state["verified"] else "abstain"
 
     def answer_node(state: AgentState) -> dict:
         return {}

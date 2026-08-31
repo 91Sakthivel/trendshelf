@@ -38,12 +38,17 @@ Thumbs.db
 # dbt connection config (use profiles.yml.example instead)
 profiles.yml
 
-# Temp / debug scripts
-_*.py
-check_*.py
-validate_*.py
-run_*.py
-recollect_*.py
-sample_*.py
-test_*.py
+# Temp / debug scripts (root-level only -- unanchored patterns here
+# previously matched at any depth, silently swallowing real package files:
+# every __init__.py in the repo matched "_*.py", and ingestion/run_ingest.py
+# matched "run_*.py". Anchored with a leading "/" so these only ever apply
+# to root-level throwaway scripts like test_apis.py, not tests/**/test_*.py
+# or any future package's run_*.py/_*.py.)
+/_*.py
+/check_*.py
+/validate_*.py
+/run_*.py
+/recollect_*.py
+/sample_*.py
+/test_*.py
 TRENDSHELF_STATUS.md

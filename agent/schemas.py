@@ -104,6 +104,14 @@ class RetrievedChunk(BaseModel):
     # COSINE distance from VECTOR_SEARCH, lower = more similar. Named
     # "distance" not "score" on purpose -- it is not a confidence value.
     similarity_distance: float
+    # Phase 3 injection guard (agent/tools/docs.py _search(), scan_untrusted).
+    # True when chunk_text matched a known injection pattern and was
+    # prefixed with an inert-content marker -- content is never dropped,
+    # only flagged and neutralized. Always False when scan_untrusted was
+    # False for this call (lookup_methodology / get_threshold_rationale):
+    # internal docs are team-authored, not adversarial input, so they are
+    # never scanned at all, not just expected to pass.
+    injection_flagged: bool = False
 
 
 class DocSearchResult(BaseModel):

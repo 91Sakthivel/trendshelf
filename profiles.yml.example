@@ -9,3 +9,4 @@ trendshelf:
       keyfile: "{{ env_var('GCP_CREDENTIALS_PATH', 'credentials.json') }}"
       threads: 4
       timeout_seconds: 300
+      maximum_bytes_billed: 10737418240
